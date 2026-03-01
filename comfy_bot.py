@@ -445,7 +445,7 @@ def handle(msg):
         return
 
     img = vid = None
-    if cmd in ("i2v", "zface", "faceid"):
+    if cmd in ("i2v", "i2v2", "zface", "faceid"):
         fid = get_photo(msg)
         if not fid:
             reply(cid, f"Reply to a photo with /{cmd} <prompt>", mid)

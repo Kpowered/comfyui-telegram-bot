@@ -107,8 +107,9 @@ def handle(cmd, body, image_path=None, video_path=None):
                   audio_prompt=audio), "video", en)
 
     if cmd == "i2v2":
+        # i2v2 同 i2v：必须回复图片
         if not image_path:
-            return {"ok": False, "error": "need image"}
+            return {"ok": False, "error": "need image (reply to a photo)"}
         w, h = parse_size(opts.get("size"), 576, 1024)
         steps = int(opts.get("steps", 10))
         # A 段 / B 段 prompt：用 ||| 分隔
@@ -122,6 +123,16 @@ def handle(cmd, body, image_path=None, video_path=None):
                   length_a=len_a, length_b=len_b,
                   steps=steps, high_steps=steps // 2,
                   fps=fps), "video", en)
+
+    if cmd == "video":
+        # 默认按竖图（A：人像）更稳：576x1024，默认 5 秒（source_fps=16 → length=80）
+        w, h = parse_size(opts.get("size"), 576, 1024)
+        steps = int(opts.get("steps", 10))
+        audio = opts.get("audio")
+        return _r(comfy_runner.video(en, w, h,
+                  int(opts.get("length", 80)), steps,
+                  high_steps=steps // 2,
+                  audio_prompt=audio), "video", en)
 
     if cmd == "upscale":
         if not video_path:
