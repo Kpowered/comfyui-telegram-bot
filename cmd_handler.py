@@ -106,15 +106,22 @@ def handle(cmd, body, image_path=None, video_path=None):
                   high_steps=steps // 2,
                   audio_prompt=audio), "video", en)
 
-    if cmd == "video":
-        # 默认按竖图（A：人像）更稳：576x1024，默认 5 秒（source_fps=16 → length=80）
+    if cmd == "i2v2":
+        if not image_path:
+            return {"ok": False, "error": "need image"}
         w, h = parse_size(opts.get("size"), 576, 1024)
         steps = int(opts.get("steps", 10))
-        audio = opts.get("audio")
-        return _r(comfy_runner.video(en, w, h,
-                  int(opts.get("length", 80)), steps,
-                  high_steps=steps // 2,
-                  audio_prompt=audio), "video", en)
+        # A 段 / B 段 prompt：用 ||| 分隔
+        if "|||" not in en:
+            return {"ok": False, "error": "need two prompts separated by |||"}
+        a, b = [x.strip() for x in en.split("|||", 1)]
+        len_a = int(opts.get("len_a", 48))
+        len_b = int(opts.get("len_b", 32))
+        fps = int(opts.get("fps", 25))
+        return _r(comfy_runner.i2v_two_stage(a, b, image_path, w, h,
+                  length_a=len_a, length_b=len_b,
+                  steps=steps, high_steps=steps // 2,
+                  fps=fps), "video", en)
 
     if cmd == "upscale":
         if not video_path:

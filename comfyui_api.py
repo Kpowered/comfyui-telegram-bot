@@ -249,6 +249,8 @@ def build_img2video_prompt(
     audio_negative: str = "music, singing, speech, dialogue, voiceover, narration, words, harsh, loud, distorted, clipping, echo, reverb, low quality, noise, music, songs, music video, background music.",
     audio_steps: int = 75,
     audio_cfg: float = 5.0,
+    norife: bool = False,
+    out_tag: str = 'img2video',
 ) -> dict:
     """构建图生视频 API prompt — 双阶段采样 (Smooth Workflow v3.0)
 
@@ -510,14 +512,15 @@ def build_img2video_prompt(
                 "use_fp16": True
             }
         },
-        # VHS_VideoCombine (198) - 25fps h264-mp4
+        # VHS_VideoCombine (198) - h264-mp4
         "198": {
             "class_type": "VHS_VideoCombine",
             "inputs": {
-                "images": ["212", 0],
-                "frame_rate": 25,
+                # 大动作段可通过 norife=True 直接绕过插帧，避免重影
+                "images": ["199", 0] if norife else ["212", 0],
+                "frame_rate": 16 if norife else 25,
                 "loop_count": 0,
-                "filename_prefix": "Video/img2video",
+                "filename_prefix": f"Video/{out_tag}",
                 "format": "video/h264-mp4",
                 "pix_fmt": "yuv420p",
                 "crf": 16,
@@ -615,6 +618,8 @@ def img2video_submit(
     audio_negative: str = "music, singing, speech, dialogue, voiceover, narration, words, harsh, loud, distorted, clipping, echo, reverb, low quality, noise, music, songs, music video, background music.",
     audio_steps: int = 75,
     audio_cfg: float = 5.0,
+    norife: bool = False,
+    out_tag: str = "img2video",
 ) -> str:
     """
     异步提交图生视频任务，立即返回 prompt_id。
@@ -637,6 +642,8 @@ def img2video_submit(
         audio_negative=audio_negative,
         audio_steps=audio_steps,
         audio_cfg=audio_cfg,
+        norife=norife,
+        out_tag=out_tag,
     )
 
     prompt_id = queue_prompt(prompt)
@@ -1461,5 +1468,7 @@ if __name__ == "__main__":
     paths = txt2img(text)
     for p in paths:
         print(f"Output: {p}")
+
+
 
 
