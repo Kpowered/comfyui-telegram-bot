@@ -239,7 +239,8 @@ def build_img2video_prompt(
     ),
     width: int = 832,
     height: int = 480,
-    length: int = 80,
+    length: int = 80,
+
     steps: int = 10,
     cfg: float = 1.15,
     high_steps: int = 5,
@@ -516,7 +517,7 @@ def build_img2video_prompt(
                 "images": ["212", 0],
                 "frame_rate": 25,
                 "loop_count": 0,
-                "filename_prefix": "Video/%date:yyyy-MM-dd%/%date:hhmmss%",
+                "filename_prefix": "Video/img2video",
                 "format": "video/h264-mp4",
                 "pix_fmt": "yuv420p",
                 "crf": 16,
