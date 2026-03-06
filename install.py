@@ -80,7 +80,7 @@ def main():
         
         content = fpath.read_text(encoding='utf-8')
         
-        # 替换路径
+        # 替换路径（注意：这些是示例路径，install.py 会替换为用户实际路径）
         replacements = {
             r'D:\ComfyUI\ComfyUI_windows_portable': comfyui_path,
             r'C:\Users\admin\.openclaw\workspace': str(workspace),
@@ -115,6 +115,10 @@ pause
     print(f"\n开机自启:")
     print(f"  Win+R 输入 shell:startup")
     print(f"  将 {bat_file} 复制到启动文件夹")
+    print(f"\n重要提示:")
+    print(f"  - 以下文件已自动更新路径: comfy_bot.py, comfy_runner.py, comfyui_api.py")
+    print(f"  - 替换的路径包括: ComfyUI路径, Workspace路径, Telegram Token")
+    print(f"  - 如需手动修改，请编辑这些文件中的对应变量")
 
 if __name__ == '__main__':
     main()
