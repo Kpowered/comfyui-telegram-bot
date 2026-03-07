@@ -297,25 +297,7 @@ sys.stdout.flush()
     t0 = time.time()
     last_update = 0
     timeout = 600  # 10分钟超时
-    
-    # 使用线程读取输出，避免死锁
-    stdout_lines = []
-    stderr_lines = []
-    
-    def read_stdout():
-        for line in proc.stdout:
-            stdout_lines.append(line)
-    
-    def read_stderr():
-        for line in proc.stderr:
-            stderr_lines.append(line)
-    
-    import threading
-    t_out = threading.Thread(target=read_stdout, daemon=True)
-    t_err = threading.Thread(target=read_stderr, daemon=True)
-    t_out.start()
-    t_err.start()
-    
+
     while proc.poll() is None:
         elapsed = time.time() - t0
         if elapsed > timeout:
@@ -330,20 +312,22 @@ sys.stdout.flush()
             last_update = elapsed
             progress_cb(elapsed)
         time.sleep(1)
-    
-    # 等待输出读取完成
-    t_out.join(timeout=5)
-    t_err.join(timeout=5)
-    
-    stdout = ''.join(stdout_lines)
-    stderr = ''.join(stderr_lines)
+
+    try:
+        stdout, stderr = proc.communicate(timeout=5)
+    except Exception as e:
+        log(f"run_cmd communicate error cmd=/{cmd}: {e}")
+        stdout = ""
+        stderr = ""
+
+    stdout = stdout or ""
+    stderr = stderr or ""
     log(f"run_cmd finished cmd=/{cmd} rc={proc.returncode} stdout_len={len(stdout)} stderr_len={len(stderr)}")
-    
+
     if proc.returncode != 0:
         log(f"run_cmd error stderr_tail={stderr[-400:] if stderr else 'EMPTY'}")
         return {"ok": False, "error": stderr[-500:] if stderr else "unknown"}
-    
-    # 提取标记之间的 JSON
+
     try:
         start_marker = '__RESULT_START__'
         end_marker = '__RESULT_END__'
@@ -355,8 +339,7 @@ sys.stdout.flush()
             return json.loads(json_str)
     except Exception as e:
         log(f"JSON parse error: {e}; stdout_tail={stdout[-400:]}")
-    
-    # 回退：尝试解析最后一行
+
     lines = [l for l in stdout.strip().split("\n") if l.strip()]
     if not lines:
         log(f"run_cmd no output cmd=/{cmd} stdout_tail={stdout[-400:] if stdout else 'EMPTY'} stderr_tail={stderr[-400:] if stderr else 'EMPTY'}")
