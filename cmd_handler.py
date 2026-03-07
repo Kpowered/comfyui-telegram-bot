@@ -114,25 +114,31 @@ def handle(cmd, body, image_path=None, video_path=None):
     cmd = cmd.lower().strip('/')
     raw, opts = parse_args(body)
     en = translate_zh2en(raw) if raw else ""
-    
-    # 记录翻译结果
+
+    # 记录翻译结果（避免控制台编码炸掉时影响主流程）
     if raw and has_chinese(raw):
-        print(f"[TRANSLATE]\nChinese: {raw}\nEnglish: {en}\n", flush=True)
-    
-    # 自动压缩过长提示词（CLIP 模型限制约 400 字符）
-    compressed = False
-    if cmd in ("img",) and len(en) > 400:
-        en, compressed = compress_prompt(en, max_chars=380)
-        if compressed:
-            print(f"[INFO] Prompt compressed due to CLIP limit", flush=True)
+        try:
+            print(f"[TRANSLATE]\nChinese: {raw}\nEnglish: {en}\n", flush=True)
+        except Exception:
+            pass
+
+    # /img 只做硬截断，不再走 LLM 压缩
+    truncated = False
+    if cmd == "img" and len(en) > 380:
+        original_len = len(en)
+        en = en[:380]
+        truncated = True
+        try:
+            print(f"[TRUNCATE] Prompt too long: {original_len} -> {len(en)} chars", flush=True)
+        except Exception:
+            pass
 
     if cmd == "img":
         w, h = parse_size(opts.get("size"), 1920, 1080)
         result = _r(comfy_runner.txt2img(en, w, h, int(opts.get("steps", 5))),
                     "image", en)
-        # 添加压缩提示
-        if compressed and result.get("ok"):
-            result["compressed"] = True
+        if truncated and result.get("ok"):
+            result["truncated"] = True
         return result
 
 

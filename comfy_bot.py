@@ -337,8 +337,10 @@ sys.stdout.flush()
     
     stdout = ''.join(stdout_lines)
     stderr = ''.join(stderr_lines)
+    log(f"run_cmd finished cmd=/{cmd} rc={proc.returncode} stdout_len={len(stdout)} stderr_len={len(stderr)}")
     
     if proc.returncode != 0:
+        log(f"run_cmd error stderr_tail={stderr[-400:] if stderr else 'EMPTY'}")
         return {"ok": False, "error": stderr[-500:] if stderr else "unknown"}
     
     # 提取标记之间的 JSON
@@ -349,17 +351,20 @@ sys.stdout.flush()
         end_idx = stdout.find(end_marker)
         if start_idx != -1 and end_idx != -1:
             json_str = stdout[start_idx + len(start_marker):end_idx].strip()
+            log(f"run_cmd markers found cmd=/{cmd} json_len={len(json_str)}")
             return json.loads(json_str)
     except Exception as e:
-        log(f"JSON parse error: {e}")
+        log(f"JSON parse error: {e}; stdout_tail={stdout[-400:]}")
     
     # 回退：尝试解析最后一行
     lines = [l for l in stdout.strip().split("\n") if l.strip()]
     if not lines:
+        log(f"run_cmd no output cmd=/{cmd} stdout_tail={stdout[-400:] if stdout else 'EMPTY'} stderr_tail={stderr[-400:] if stderr else 'EMPTY'}")
         return {"ok": False, "error": "no output"}
     try:
         return json.loads(lines[-1])
     except:
+        log(f"run_cmd parse fallback failed cmd=/{cmd} last_line={lines[-1][:300]}")
         return {"ok": False, "error": f"parse failed, last line: {lines[-1][:200]}"}
 
 
@@ -519,9 +524,10 @@ def send_result(cid, mid, res):
         return
     cap = res.get("prompt_en", "")[:1024]
     
-    # 添加压缩提示
     if res.get("compressed"):
         cap = "⚠️ 提示词过长，已自动压缩总结\n\n" + cap
+    if res.get("truncated"):
+        cap = "⚠️ 提示词过长，已自动截断\n\n" + cap
     
     if res.get("type") == "video":
         send_video(cid, res["path"], cap, mid)
