@@ -3,6 +3,12 @@ ComfyUI 指令处理器 - 纯机械化，不经过 AI 模型
 """
 import sys, os, re, json, urllib.request, urllib.parse
 
+# 强制 UTF-8 编码，避免 Windows GBK 编码问题
+if sys.stdout.encoding != 'utf-8':
+    sys.stdout.reconfigure(encoding='utf-8')
+if sys.stderr.encoding != 'utf-8':
+    sys.stderr.reconfigure(encoding='utf-8')
+
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import comfy_runner
 
