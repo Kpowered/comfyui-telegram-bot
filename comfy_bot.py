@@ -286,7 +286,9 @@ import sys, json
 sys.path.insert(0, r'{WS}')
 import cmd_handler
 r = cmd_handler.handle({repr(cmd)}, {repr(body)}, image_path={repr(img)}, video_path={repr(vid)})
+print('__RESULT_START__')
 print(json.dumps(r, ensure_ascii=False))
+print('__RESULT_END__')
 sys.stdout.flush()
 """
     proc = subprocess.Popen([PY, "-u", "-c", script],
@@ -338,10 +340,27 @@ sys.stdout.flush()
     
     if proc.returncode != 0:
         return {"ok": False, "error": stderr[-500:] if stderr else "unknown"}
+    
+    # 提取标记之间的 JSON
+    try:
+        start_marker = '__RESULT_START__'
+        end_marker = '__RESULT_END__'
+        start_idx = stdout.find(start_marker)
+        end_idx = stdout.find(end_marker)
+        if start_idx != -1 and end_idx != -1:
+            json_str = stdout[start_idx + len(start_marker):end_idx].strip()
+            return json.loads(json_str)
+    except Exception as e:
+        log(f"JSON parse error: {e}")
+    
+    # 回退：尝试解析最后一行
     lines = [l for l in stdout.strip().split("\n") if l.strip()]
     if not lines:
         return {"ok": False, "error": "no output"}
-    return json.loads(lines[-1])
+    try:
+        return json.loads(lines[-1])
+    except:
+        return {"ok": False, "error": f"parse failed, last line: {lines[-1][:200]}"}
 
 
 HELP_MAIN = (
