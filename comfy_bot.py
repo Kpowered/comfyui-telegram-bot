@@ -5,6 +5,9 @@ import urllib.request, urllib.error
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import cmd_handler
 
+# ── 全局锁：防止并发处理 /md 请求 ──
+md_lock = threading.Lock()
+
 # ── PID lock: only one instance allowed ──
 PIDFILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "comfy_bot.pid")
 
@@ -144,7 +147,11 @@ def reply(cid, text, mid=None):
 
 
 def edit_msg(cid, msg_id, text):
-    return tg("editMessageText", {"chat_id": cid, "message_id": msg_id, "text": text})
+    try:
+        return tg("editMessageText", {"chat_id": cid, "message_id": msg_id, "text": text})
+    except Exception as e:
+        log(f"edit_msg failed: {e}")
+        return None
 
 
 def send_photo(cid, path, cap="", mid=None):
@@ -246,7 +253,7 @@ import cmd_handler
 r = cmd_handler.handle({repr(cmd)}, {repr(body)}, image_path={repr(img)}, video_path={repr(vid)})
 print(json.dumps(r, ensure_ascii=False))
 """
-    proc = subprocess.Popen([PY, "-c", script],
+    proc = subprocess.Popen([PY, "-u", "-c", script],
                             stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                             text=True)
     t0 = time.time()
@@ -284,6 +291,8 @@ HELP_MAIN = (
     "  /pm — 扩写详细英文prompt\n"
     "  /en — 中文翻译英文（简单直译）\n"
     "  任意出图指令加 --xx 自动扩写\n\n"
+    "⚙️ 系统\n"
+    "  /restart — 重启 Bot\n\n"
     "输入 /help <指令> 查看详细用法\n"
     "例: /help img"
 )
@@ -475,6 +484,12 @@ def handle(msg):
             edit_msg(cid, tip_id, "❌ 翻译失败")
         return
 
+    if cmd == "restart":
+        reply(cid, "🔄 重启 Bot 中...", mid)
+        log("User requested restart")
+        sys.exit(0)
+        return
+
     # allow new commands even if not in TIPS (fallback tip)
     if cmd not in TIPS:
         # still proceed if cmd is supported by cmd_handler; show a generic tip
@@ -525,7 +540,18 @@ def handle(msg):
         edit_msg(cid, tip_id, f"{bar}... ⏱ {mins}:{secs:02d}")
 
     try:
-        r = run_cmd(cmd, body, img, vid, progress_cb=on_progress)
+        # /md 使用锁防止并发
+        if cmd == "md":
+            if not md_lock.acquire(blocking=False):
+                reply(cid, "⏳ 另一个 /md 任务正在执行，请稍后再试", mid)
+                return
+            try:
+                r = run_cmd(cmd, body, img, vid, progress_cb=on_progress)
+            finally:
+                md_lock.release()
+        else:
+            r = run_cmd(cmd, body, img, vid, progress_cb=on_progress)
+        
         if tip_id:
             edit_msg(cid, tip_id, "✅ Done" if r.get("ok") else f"❌ {r.get('error','unknown')[:200]}")
         send_result(cid, mid, r)

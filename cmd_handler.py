@@ -73,14 +73,14 @@ def handle(cmd, body, image_path=None, video_path=None):
         print(f"[TRANSLATE]\nChinese: {raw}\nEnglish: {en}\n", flush=True)
 
     if cmd == "img":
-        w, h = parse_size(opts.get("size"), 1024, 1024)
+        w, h = parse_size(opts.get("size"), 1920, 1080)
         return _r(comfy_runner.txt2img(en, w, h, int(opts.get("steps", 5))),
                   "image", en)
 
 
 
     if cmd == "md":
-        w, h = parse_size(opts.get("size"), 640, 960)
+        w, h = parse_size(opts.get("size"), 1920, 1080)
         # Moody 原生中文，不翻译
         return _r(comfy_runner.moody_txt2img(raw, w, h), "image", raw)
 

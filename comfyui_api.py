@@ -106,6 +106,7 @@ def build_txt2img_prompt(
 
 def queue_prompt(prompt: dict, client_id: str | None = None) -> str:
     """提交 prompt 到 ComfyUI，返回 prompt_id"""
+    print(f"[queue_prompt] Starting to queue prompt", flush=True)
     if client_id is None:
         client_id = str(uuid.uuid4())
 
@@ -119,26 +120,54 @@ def queue_prompt(prompt: dict, client_id: str | None = None) -> str:
         data=payload,
         headers={"Content-Type": "application/json"}
     )
-    with urllib.request.urlopen(req) as resp:
-        result = json.loads(resp.read())
-    return result["prompt_id"]
+    try:
+        print(f"[queue_prompt] Sending request to {COMFYUI_URL}/prompt", flush=True)
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            result = json.loads(resp.read())
+        print(f"[queue_prompt] Got prompt_id: {result['prompt_id']}", flush=True)
+        return result["prompt_id"]
+    except Exception as e:
+        print(f"[queue_prompt] Error: {e}", flush=True)
+        raise RuntimeError(f"Failed to queue prompt: {e}")
 
 
-def poll_history(prompt_id: str, timeout: int = 900, interval: float = 2.0) -> dict:
+def poll_history(prompt_id: str, timeout: int = 1800, interval: float = 2.0) -> dict:
     """轮询直到 prompt 完成，返回 history 数据"""
+    print(f"[poll_history] Starting poll for {prompt_id}, timeout={timeout}s", flush=True)
     start = time.time()
     while time.time() - start < timeout:
         try:
-            with urllib.request.urlopen(f"{COMFYUI_URL}/history/{prompt_id}") as resp:
-                history = json.loads(resp.read())
-            if prompt_id in history:
-                status = history[prompt_id].get("status", {})
-                if status.get("completed", False) or status.get("status_str") == "success":
-                    return history[prompt_id]
-                if "outputs" in history[prompt_id] and history[prompt_id]["outputs"]:
-                    return history[prompt_id]
-        except urllib.error.URLError:
-            pass
+            # 先检查队列状态
+            with urllib.request.urlopen(f"{COMFYUI_URL}/queue", timeout=10) as resp:
+                queue = json.loads(resp.read())
+            
+            # 检查是否还在队列中
+            in_queue = False
+            for item in queue.get("queue_running", []) + queue.get("queue_pending", []):
+                if len(item) >= 2 and item[1] == prompt_id:
+                    in_queue = True
+                    print(f"[poll_history] Still in queue", flush=True)
+                    break
+            
+            # 如果不在队列中，检查 history
+            if not in_queue:
+                with urllib.request.urlopen(f"{COMFYUI_URL}/history/{prompt_id}", timeout=10) as resp:
+                    history = json.loads(resp.read())
+                if prompt_id in history:
+                    status = history[prompt_id].get("status", {})
+                    print(f"[poll_history] Status: {status.get('status_str')}, completed: {status.get('completed')}", flush=True)
+                    if status.get("completed", False) or status.get("status_str") == "success":
+                        print(f"[poll_history] Task completed, returning history", flush=True)
+                        return history[prompt_id]
+                    if "outputs" in history[prompt_id] and history[prompt_id]["outputs"]:
+                        print(f"[poll_history] Found outputs, returning history", flush=True)
+                        return history[prompt_id]
+                else:
+                    print(f"[poll_history] Not in queue and not in history, waiting...", flush=True)
+        except urllib.error.URLError as e:
+            print(f"[poll_history] URLError: {e}", flush=True)
+        except Exception as e:
+            print(f"[poll_history] Error: {e}", flush=True)
         time.sleep(interval)
     raise TimeoutError(f"ComfyUI prompt {prompt_id} timed out after {timeout}s")
 
@@ -710,21 +739,139 @@ def check_video_status(prompt_id: str) -> dict:
 def build_moody_zib_zit_prompt(
     positive_prompt: str,
     negative_prompt: str = "artifacts, model, figurine, low resolution, blurry image, overexposed, light leaks, JPEG compression, watermark, noise, body imperfections, text",
-    width: int = 640,
-    height: int = 960,
-    zib_steps: int = 17,
-    zib_cfg: float = 4.0,
-    zib_end_step: int = 12,
-    zit_steps: int = 12,
+    width: int = 1920,
+    height: int = 1080,
+    zib_steps: int = 9,
+    zib_cfg: float = 1.0,
+    zib_end_step: int = 7,
+    zit_steps: int = 9,
     zit_cfg: float = 1.0,
     zit_start_step: int = 4,
-    latent_scale: float = 1.6,
-    upscale_by: float = 1.5,
-    upscale_steps: int = 3,
-    upscale_cfg: float = 1.0,
-    upscale_denoise: float = 0.27,
     seed: int | None = None,
 ) -> dict:
+    """构建 Moody ZIB+ZIT 双模型文生图工作流（直接生成目标分辨率）"""
+    import random
+    if seed is None:
+        seed = random.randint(0, 2**53)
+
+    prompt = {
+        # CLIP + VAE
+        "1": {
+            "class_type": "CLIPLoader",
+            "inputs": {
+                "clip_name": "qwen_3_4b.safetensors",
+                "type": "lumina2",
+                "device": "default",
+            }
+        },
+        "2": {
+            "class_type": "VAELoader",
+            "inputs": {"vae_name": "ae.safetensors"}
+        },
+        # Positive / Negative prompts
+        "3": {
+            "class_type": "CLIPTextEncode",
+            "inputs": {
+                "text": positive_prompt,
+                "clip": ["1", 0],
+            }
+        },
+        "4": {
+            "class_type": "CLIPTextEncode",
+            "inputs": {
+                "text": negative_prompt,
+                "clip": ["1", 0],
+            }
+        },
+        "5": {
+            "class_type": "ConditioningZeroOut",
+            "inputs": {"conditioning": ["3", 0]}
+        },
+        # Empty latent - 直接使用目标分辨率
+        "6": {
+            "class_type": "EmptySD3LatentImage",
+            "inputs": {"width": width, "height": height, "batch_size": 1}
+        },
+        # === Stage 1: ZIB ===
+        "10": {
+            "class_type": "UNETLoader",
+            "inputs": {
+                "unet_name": "zimage base\\moody-wild-V1-distilled-10steps.safetensors",
+                "weight_dtype": "default",
+            }
+        },
+        "11": {
+            "class_type": "ModelSamplingAuraFlow",
+            "inputs": {"shift": 3.0, "model": ["10", 0]}
+        },
+        "12": {
+            "class_type": "KSamplerAdvanced",
+            "inputs": {
+                "add_noise": "enable",
+                "noise_seed": seed,
+                "control_after_generate": "randomize",
+                "steps": zib_steps,
+                "cfg": zib_cfg,
+                "sampler_name": "dpmpp_2m_sde",
+                "scheduler": "beta",
+                "start_at_step": 0,
+                "end_at_step": zib_end_step,
+                "return_with_leftover_noise": "enable",
+                "model": ["11", 0],
+                "positive": ["3", 0],
+                "negative": ["4", 0],
+                "latent_image": ["6", 0],
+            }
+        },
+        # === Stage 2: ZIT (直接在目标分辨率上继续) ===
+        "20": {
+            "class_type": "UNETLoader",
+            "inputs": {
+                "unet_name": "moodyPornMix_zitV9.safetensors",
+                "weight_dtype": "default",
+            }
+        },
+        "21": {
+            "class_type": "ModelSamplingAuraFlow",
+            "inputs": {"shift": 3.0, "model": ["20", 0]}
+        },
+        "22": {
+            "class_type": "KSamplerAdvanced",
+            "inputs": {
+                "add_noise": "disable",
+                "noise_seed": seed,
+                "control_after_generate": "randomize",
+                "steps": zit_steps,
+                "cfg": zit_cfg,
+                "sampler_name": "dpmpp_2m_sde",
+                "scheduler": "beta",
+                "start_at_step": zit_start_step,
+                "end_at_step": 10000,
+                "return_with_leftover_noise": "disable",
+                "model": ["21", 0],
+                "positive": ["3", 0],
+                "negative": ["5", 0],
+                "latent_image": ["12", 0],
+            }
+        },
+        # VAE Decode
+        "30": {
+            "class_type": "VAEDecode",
+            "inputs": {
+                "samples": ["22", 0],
+                "vae": ["2", 0],
+            }
+        },
+        # Save
+        "50": {
+            "class_type": "SaveImage",
+            "inputs": {
+                "filename_prefix": "moody",
+                "images": ["30", 0],
+            }
+        },
+    }
+    return prompt
     """构建 Moody ZIB+ZIT 双模型文生图工作流"""
     import random
     if seed is None:
@@ -895,7 +1042,7 @@ def build_moody_zib_zit_prompt(
             "class_type": "SaveImage",
             "inputs": {
                 "filename_prefix": "moody",
-                "images": ["41", 0],
+                "images": ["30", 0],
             }
         },
     }
@@ -905,12 +1052,13 @@ def build_moody_zib_zit_prompt(
 def moody_zib_zit(
     positive_prompt: str,
     negative_prompt: str = "artifacts, model, figurine, low resolution, blurry image, overexposed, light leaks, JPEG compression, watermark, noise, body imperfections, text",
-    width: int = 640,
-    height: int = 960,
+    width: int = 1920,
+    height: int = 1080,
     seed: int | None = None,
     timeout: int = 600,
 ) -> list[str]:
-    """Moody ZIB+ZIT 双模型文生图，返回输出图片路径列表"""
+    """Moody ZIB+ZIT 双模型文生图（直接生成 1920x1080）"""
+    print(f"[moody_zib_zit] Building prompt: {width}x{height}", flush=True)
     prompt = build_moody_zib_zit_prompt(
         positive_prompt=positive_prompt,
         negative_prompt=negative_prompt,
@@ -918,15 +1066,15 @@ def moody_zib_zit(
         height=height,
         seed=seed,
     )
+    print(f"[moody_zib_zit] Queueing prompt...", flush=True)
     prompt_id = queue_prompt(prompt)
-    # 轮询等待
-    for _ in range(timeout):
-        time.sleep(1)
-        history = poll_history(prompt_id)
-        if history:
-            images = get_output_images(history)
-            return [get_image_path(img) for img in images]
-    raise TimeoutError(f"Moody ZIB+ZIT timed out after {timeout}s")
+    print(f"[moody_zib_zit] Prompt queued: {prompt_id}, polling...", flush=True)
+    history = poll_history(prompt_id, timeout=timeout)
+    print(f"[moody_zib_zit] Poll complete, extracting images...", flush=True)
+    images = get_output_images(history)
+    paths = [get_image_path(img) for img in images]
+    print(f"[moody_zib_zit] Done: {paths}", flush=True)
+    return paths
 
 
 def build_pulid_faceid_prompt(

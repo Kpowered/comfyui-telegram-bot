@@ -112,13 +112,18 @@ def klein_faceid(prompt, face_image_path, target_image_path,
 
 
 
-def moody_txt2img(prompt, width=640, height=960, seed=None):
-    """Moody ZIB+ZIT 双模型文生图"""
+def moody_txt2img(prompt, width=1920, height=1080, seed=None):
+    """Moody ZIB+ZIT 双模型文生图（1920x1080）"""
     try:
+        print(f"[moody_txt2img] Starting: {width}x{height}", flush=True)
         paths = comfyui_api.moody_zib_zit(
             positive_prompt=prompt, width=width, height=height, seed=seed)
+        print(f"[moody_txt2img] Success: {paths}", flush=True)
         return {"ok": True, "path": _to_ws(paths[0], "moody"), "original": paths[0]}
     except Exception as e:
+        print(f"[moody_txt2img] Error: {e}", flush=True)
+        import traceback
+        traceback.print_exc()
         return {"ok": False, "error": str(e)}
 
 
