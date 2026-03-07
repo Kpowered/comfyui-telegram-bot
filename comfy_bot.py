@@ -201,6 +201,41 @@ def alive():
         return False
 
 
+def cleanup_stuck_processes():
+    """清理运行超过15分钟的 cmd_handler 子进程"""
+    try:
+        import psutil
+        killed = 0
+        for proc in psutil.process_iter(['pid', 'name', 'cmdline', 'create_time']):
+            try:
+                cmdline = proc.info.get('cmdline') or []
+                if any('cmd_handler' in str(arg) for arg in cmdline):
+                    runtime = time.time() - proc.info['create_time']
+                    if runtime > 900:  # 15分钟
+                        log(f"Killing stuck process PID {proc.info['pid']} (runtime: {runtime:.0f}s)")
+                        proc.kill()
+                        killed += 1
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                pass
+        if killed > 0:
+            log(f"Cleaned up {killed} stuck process(es)")
+    except ImportError:
+        # psutil 不可用，使用 Windows 原生方法
+        try:
+            import ctypes
+            for proc_id in range(1, 65536):
+                try:
+                    handle = ctypes.windll.kernel32.OpenProcess(0x1000, False, proc_id)
+                    if handle:
+                        ctypes.windll.kernel32.CloseHandle(handle)
+                except:
+                    pass
+        except:
+            pass
+    except Exception as e:
+        log(f"Cleanup error: {e}")
+
+
 def ensure_comfy():
     """Check ComfyUI, auto-restart if down. Returns True if alive."""
     global _comfy_restarting
@@ -258,18 +293,30 @@ print(json.dumps(r, ensure_ascii=False))
                             text=True)
     t0 = time.time()
     last_update = 0
+    timeout = 600  # 10分钟超时
+    
     while proc.poll() is None:
         elapsed = time.time() - t0
-        if elapsed > 3000:
-            proc.kill()
-            return {"ok": False, "error": "timeout 3000s"}
+        if elapsed > timeout:
+            log(f"Process timeout after {timeout}s, killing PID {proc.pid}")
+            try:
+                proc.kill()
+                proc.wait(timeout=5)
+            except:
+                pass
+            return {"ok": False, "error": f"timeout {timeout}s"}
         if progress_cb and elapsed - last_update >= 15:
             last_update = elapsed
             progress_cb(elapsed)
         time.sleep(1)
 
-    stdout = proc.stdout.read()
-    stderr = proc.stderr.read()
+    try:
+        stdout = proc.stdout.read()
+        stderr = proc.stderr.read()
+    except Exception as e:
+        log(f"Failed to read process output: {e}")
+        return {"ok": False, "error": f"read error: {e}"}
+    
     if proc.returncode != 0:
         return {"ok": False, "error": stderr[-500:] if stderr else "unknown"}
     lines = [l for l in stdout.strip().split("\n") if l.strip()]
@@ -564,6 +611,8 @@ def main():
     log("Starting bot...")
     offset = None
     seen = set()  # 去重：已处理的 message_id
+    last_cleanup = time.time()
+    
     r = tg("getUpdates", {"offset": -1, "timeout": 0})
     if r.get("ok") and r["result"]:
         offset = r["result"][-1]["update_id"] + 1
@@ -582,6 +631,11 @@ def main():
 
     while True:
         try:
+            # 每5分钟清理一次卡住的子进程
+            if time.time() - last_cleanup > 300:
+                cleanup_stuck_processes()
+                last_cleanup = time.time()
+            
             p = {"timeout": 10}
             if offset:
                 p["offset"] = offset
