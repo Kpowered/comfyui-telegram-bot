@@ -1530,7 +1530,7 @@ def build_klein_faceid_prompt(
         "18": {
             "class_type": "UNETLoader",
             "inputs": {
-                "unet_name": "F2K-9b-darkBeastMar0326Latest_dbkleinv2BFS.safetensors",
+                "unet_name": "flux-2-klein\\F2K-9b-darkBeastMar0326Latest_dbkleinv2BFS.safetensors",
                 "weight_dtype": "default"
             }
         },
