@@ -569,6 +569,16 @@ def main():
         offset = r["result"][-1]["update_id"] + 1
         log(f"Skip old, offset={offset}")
     log("Polling...")
+    
+    # 启动通知
+    try:
+        result = tg("sendMessage", {"chat_id": "607333500", "text": "✅ Bot 已启动"})
+        if result.get("ok"):
+            log("Startup notification sent")
+        else:
+            log(f"Startup notification failed: {result}")
+    except Exception as e:
+        log(f"Startup notification error: {e}")
 
     while True:
         try:
