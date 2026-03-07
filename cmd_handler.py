@@ -11,6 +11,36 @@ def has_chinese(text):
     return bool(re.search(r'[\u4e00-\u9fff]', text))
 
 
+def compress_prompt(text, max_chars=380):
+    """压缩过长的提示词，保留核心要素"""
+    if len(text) <= max_chars:
+        return text, False
+    
+    try:
+        url = "http://127.0.0.1:11434/api/chat"
+        payload = {
+            "model": "qwen3:8b",
+            "messages": [
+                {"role": "system", "content": "You are a prompt compression expert. Compress the image generation prompt to under 380 characters while keeping all key visual elements, style, lighting, and composition details. Output ONLY the compressed prompt, no explanations."},
+                {"role": "user", "content": text}
+            ],
+            "stream": False
+        }
+        req = urllib.request.Request(url, data=json.dumps(payload).encode(),
+                                     headers={"Content-Type": "application/json"})
+        with urllib.request.urlopen(req, timeout=20) as r:
+            result = json.loads(r.read())
+            compressed = result.get("message", {}).get("content", "").strip()
+            if compressed and len(compressed) < len(text):
+                print(f"[COMPRESS] {len(text)} → {len(compressed)} chars", flush=True)
+                return compressed, True
+    except Exception as e:
+        print(f"[COMPRESS] Failed: {e}, using truncation", flush=True)
+    
+    # 压缩失败，直接截断
+    return text[:max_chars] + "...", True
+
+
 def translate_zh2en(text):
     if not has_chinese(text):
         return text
@@ -71,11 +101,22 @@ def handle(cmd, body, image_path=None, video_path=None):
     # 记录翻译结果
     if raw and has_chinese(raw):
         print(f"[TRANSLATE]\nChinese: {raw}\nEnglish: {en}\n", flush=True)
+    
+    # 自动压缩过长提示词（CLIP 模型限制约 400 字符）
+    compressed = False
+    if cmd in ("img",) and len(en) > 400:
+        en, compressed = compress_prompt(en, max_chars=380)
+        if compressed:
+            print(f"[INFO] Prompt compressed due to CLIP limit", flush=True)
 
     if cmd == "img":
         w, h = parse_size(opts.get("size"), 1920, 1080)
-        return _r(comfy_runner.txt2img(en, w, h, int(opts.get("steps", 5))),
-                  "image", en)
+        result = _r(comfy_runner.txt2img(en, w, h, int(opts.get("steps", 5))),
+                    "image", en)
+        # 添加压缩提示
+        if compressed and result.get("ok"):
+            result["compressed"] = True
+        return result
 
 
 

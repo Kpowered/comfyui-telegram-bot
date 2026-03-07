@@ -480,6 +480,11 @@ def send_result(cid, mid, res):
         reply(cid, "Error: " + res.get("error", "unknown"), mid)
         return
     cap = res.get("prompt_en", "")[:1024]
+    
+    # 添加压缩提示
+    if res.get("compressed"):
+        cap = "⚠️ 提示词过长，已自动压缩总结\n\n" + cap
+    
     if res.get("type") == "video":
         send_video(cid, res["path"], cap, mid)
     else:
