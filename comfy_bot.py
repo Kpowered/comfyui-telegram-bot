@@ -287,13 +287,32 @@ sys.path.insert(0, r'{WS}')
 import cmd_handler
 r = cmd_handler.handle({repr(cmd)}, {repr(body)}, image_path={repr(img)}, video_path={repr(vid)})
 print(json.dumps(r, ensure_ascii=False))
+sys.stdout.flush()
 """
     proc = subprocess.Popen([PY, "-u", "-c", script],
                             stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                            text=True)
+                            text=True, bufsize=1)
     t0 = time.time()
     last_update = 0
     timeout = 600  # 10分钟超时
+    
+    # 使用线程读取输出，避免死锁
+    stdout_lines = []
+    stderr_lines = []
+    
+    def read_stdout():
+        for line in proc.stdout:
+            stdout_lines.append(line)
+    
+    def read_stderr():
+        for line in proc.stderr:
+            stderr_lines.append(line)
+    
+    import threading
+    t_out = threading.Thread(target=read_stdout, daemon=True)
+    t_err = threading.Thread(target=read_stderr, daemon=True)
+    t_out.start()
+    t_err.start()
     
     while proc.poll() is None:
         elapsed = time.time() - t0
@@ -309,13 +328,13 @@ print(json.dumps(r, ensure_ascii=False))
             last_update = elapsed
             progress_cb(elapsed)
         time.sleep(1)
-
-    try:
-        stdout = proc.stdout.read()
-        stderr = proc.stderr.read()
-    except Exception as e:
-        log(f"Failed to read process output: {e}")
-        return {"ok": False, "error": f"read error: {e}"}
+    
+    # 等待输出读取完成
+    t_out.join(timeout=5)
+    t_err.join(timeout=5)
+    
+    stdout = ''.join(stdout_lines)
+    stderr = ''.join(stderr_lines)
     
     if proc.returncode != 0:
         return {"ok": False, "error": stderr[-500:] if stderr else "unknown"}
