@@ -106,6 +106,7 @@ def build_txt2img_prompt(
 
 def queue_prompt(prompt: dict, client_id: str | None = None) -> str:
     """提交 prompt 到 ComfyUI，返回 prompt_id"""
+    print(f"[queue_prompt] Starting to queue prompt", flush=True)
     if client_id is None:
         client_id = str(uuid.uuid4())
 
@@ -119,26 +120,54 @@ def queue_prompt(prompt: dict, client_id: str | None = None) -> str:
         data=payload,
         headers={"Content-Type": "application/json"}
     )
-    with urllib.request.urlopen(req) as resp:
-        result = json.loads(resp.read())
-    return result["prompt_id"]
+    try:
+        print(f"[queue_prompt] Sending request to {COMFYUI_URL}/prompt", flush=True)
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            result = json.loads(resp.read())
+        print(f"[queue_prompt] Got prompt_id: {result['prompt_id']}", flush=True)
+        return result["prompt_id"]
+    except Exception as e:
+        print(f"[queue_prompt] Error: {e}", flush=True)
+        raise RuntimeError(f"Failed to queue prompt: {e}")
 
 
-def poll_history(prompt_id: str, timeout: int = 300, interval: float = 2.0) -> dict:
+def poll_history(prompt_id: str, timeout: int = 1800, interval: float = 2.0) -> dict:
     """轮询直到 prompt 完成，返回 history 数据"""
+    print(f"[poll_history] Starting poll for {prompt_id}, timeout={timeout}s", flush=True)
     start = time.time()
     while time.time() - start < timeout:
         try:
-            with urllib.request.urlopen(f"{COMFYUI_URL}/history/{prompt_id}") as resp:
-                history = json.loads(resp.read())
-            if prompt_id in history:
-                status = history[prompt_id].get("status", {})
-                if status.get("completed", False) or status.get("status_str") == "success":
-                    return history[prompt_id]
-                if "outputs" in history[prompt_id] and history[prompt_id]["outputs"]:
-                    return history[prompt_id]
-        except urllib.error.URLError:
-            pass
+            # 先检查队列状态
+            with urllib.request.urlopen(f"{COMFYUI_URL}/queue", timeout=10) as resp:
+                queue = json.loads(resp.read())
+            
+            # 检查是否还在队列中
+            in_queue = False
+            for item in queue.get("queue_running", []) + queue.get("queue_pending", []):
+                if len(item) >= 2 and item[1] == prompt_id:
+                    in_queue = True
+                    print(f"[poll_history] Still in queue", flush=True)
+                    break
+            
+            # 如果不在队列中，检查 history
+            if not in_queue:
+                with urllib.request.urlopen(f"{COMFYUI_URL}/history/{prompt_id}", timeout=10) as resp:
+                    history = json.loads(resp.read())
+                if prompt_id in history:
+                    status = history[prompt_id].get("status", {})
+                    print(f"[poll_history] Status: {status.get('status_str')}, completed: {status.get('completed')}", flush=True)
+                    if status.get("completed", False) or status.get("status_str") == "success":
+                        print(f"[poll_history] Task completed, returning history", flush=True)
+                        return history[prompt_id]
+                    if "outputs" in history[prompt_id] and history[prompt_id]["outputs"]:
+                        print(f"[poll_history] Found outputs, returning history", flush=True)
+                        return history[prompt_id]
+                else:
+                    print(f"[poll_history] Not in queue and not in history, waiting...", flush=True)
+        except urllib.error.URLError as e:
+            print(f"[poll_history] URLError: {e}", flush=True)
+        except Exception as e:
+            print(f"[poll_history] Error: {e}", flush=True)
         time.sleep(interval)
     raise TimeoutError(f"ComfyUI prompt {prompt_id} timed out after {timeout}s")
 
@@ -370,11 +399,11 @@ def build_img2video_prompt(
                 "shift": 8.0
             }
         },
-        # UNETLoader Low (186)
+        # UNETLoader Low (186) - 改用 High 模型（Low 已损坏）
         "186": {
             "class_type": "UNETLoader",
             "inputs": {
-                "unet_name": "smoothMixWan2214BI2V_i2vV20Low.safetensors",
+                "unet_name": "smoothMixWan2214BI2V_i2vV20High.safetensors",
                 "weight_dtype": "default"
             }
         },
@@ -703,418 +732,146 @@ def check_video_status(prompt_id: str) -> dict:
     return {"status": "running", "progress": "processing"}
 
 
-def build_video_upscale_prompt(
-    video_path: str,
-    resolution: int = 1080,
-    batch_size: int = 5,
-    dit_model: str = "seedvr2_ema_3b_fp16.safetensors",
-    vae_model: str = "ema_vae_fp16.safetensors",
-    color_correction: str = "lab",
-    seed: int = 42,
-    fps: float = 25.0,
-) -> dict:
-    """构建视频超分 API prompt (SeedVR2)"""
-    prompt = {
-        # 加载视频帧
-        "400": {
-            "class_type": "VHS_LoadVideo",
-            "inputs": {
-                "video": os.path.basename(video_path),
-                "force_rate": 0,
-                "custom_width": 0,
-                "custom_height": 0,
-                "frame_load_cap": 0,
-                "skip_first_frames": 0,
-                "select_every_nth": 1,
-            }
-        },
-        # SeedVR2 DiT 模型
-        "401": {
-            "class_type": "SeedVR2LoadDiTModel",
-            "inputs": {
-                "model": dit_model,
-                "device": "cuda:0",
-                "offload_device": "cpu",
-            }
-        },
-        # SeedVR2 VAE 模型
-        "402": {
-            "class_type": "SeedVR2LoadVAEModel",
-            "inputs": {
-                "model": vae_model,
-                "device": "cuda:0",
-                "offload_device": "cpu",
-            }
-        },
-        # SeedVR2 超分主节点
-        "403": {
-            "class_type": "SeedVR2VideoUpscaler",
-            "inputs": {
-                "image": ["400", 0],
-                "dit": ["401", 0],
-                "vae": ["402", 0],
-                "seed": seed,
-                "resolution": resolution,
-                "max_resolution": 0,
-                "batch_size": batch_size,
-                "uniform_batch_size": False,
-                "color_correction": color_correction,
-                "temporal_overlap": 1,
-                "offload_device": "cpu",
-            }
-        },
-        # 输出视频
-        "404": {
-            "class_type": "VHS_VideoCombine",
-            "inputs": {
-                "images": ["403", 0],
-                "frame_rate": fps,
-                "loop_count": 0,
-                "filename_prefix": "api/upscaled",
-                "format": "video/h264-mp4",
-                "pix_fmt": "yuv420p",
-                "crf": 17,
-                "save_metadata": True,
-                "trim_to_audio": False,
-                "pingpong": False,
-                "save_output": True,
-            }
-        },
-    }
-    return prompt
 
-
-def upload_video(video_path: str) -> str:
-    """上传视频到 ComfyUI input 目录，返回文件名"""
-    import mimetypes
-    filename = os.path.basename(video_path)
-    mime_type = mimetypes.guess_type(video_path)[0] or "video/mp4"
-
-    boundary = uuid.uuid4().hex
-    with open(video_path, "rb") as f:
-        video_data = f.read()
-
-    body = (
-        f"--{boundary}\r\n"
-        f'Content-Disposition: form-data; name="image"; filename="{filename}"\r\n'
-        f"Content-Type: {mime_type}\r\n\r\n"
-    ).encode("utf-8") + video_data + f"\r\n--{boundary}--\r\n".encode("utf-8")
-
-    req = urllib.request.Request(
-        f"{COMFYUI_URL}/upload/image",
-        data=body,
-        headers={"Content-Type": f"multipart/form-data; boundary={boundary}"},
-        method="POST"
-    )
-    with urllib.request.urlopen(req) as resp:
-        result = json.loads(resp.read())
-    return result["name"]
-
-
-def video_upscale_submit(
-    video_path: str,
-    resolution: int = 1080,
-    batch_size: int = 5,
-    dit_model: str = "seedvr2_ema_3b_fp16.safetensors",
-    color_correction: str = "lab",
-    seed: int = 42,
-    fps: float = 25.0,
-) -> str:
-    """异步提交视频超分任务，返回 prompt_id"""
-    uploaded_name = upload_video(video_path)
-
-    prompt = build_video_upscale_prompt(
-        video_path=uploaded_name,
-        resolution=resolution,
-        batch_size=batch_size,
-        dit_model=dit_model,
-        color_correction=color_correction,
-        seed=seed,
-        fps=fps,
-    )
-    prompt["400"]["inputs"]["video"] = uploaded_name
-
-    prompt_id = queue_prompt(prompt)
-    return prompt_id
-
-
-# ============ Z-Image-Turbo 文生图 ============
-
-def build_zimage_txt2img_prompt(
-    positive_prompt: str,
-    width: int = 1024,
-    height: int = 1024,
-    steps: int = 8,
-    cfg: float = 1.0,
-    seed: int | None = None,
-) -> dict:
-    """构建 Z-Image-Turbo 文生图 prompt（原生中文支持）"""
-    if seed is None:
-        import random
-        seed = random.randint(0, 2**53)
-
-    return {
-        "1": {
-            "class_type": "CLIPLoader",
-            "inputs": {
-                "clip_name": "qwen_3_4b_fp8_mixed.safetensors",
-                "type": "qwen_image",
-            }
-        },
-        "2": {
-            "class_type": "UNETLoader",
-            "inputs": {
-                "unet_name": "z_image_turbo_bf16.safetensors",
-                "weight_dtype": "default",
-            }
-        },
-        "3": {
-            "class_type": "LoraLoader",
-            "inputs": {
-                "model": ["2", 0],
-                "clip": ["1", 0],
-                "lora_name": "z_image_turbo_distill_patch_lora_bf16.safetensors",
-                "strength_model": 1.0,
-                "strength_clip": 1.0,
-            }
-        },
-        "4": {
-            "class_type": "TextEncodeZImageOmni",
-            "inputs": {
-                "clip": ["3", 1],
-                "prompt": positive_prompt,
-                "auto_resize_images": True,
-            }
-        },
-        "5": {
-            "class_type": "EmptyLatentImage",
-            "inputs": {
-                "width": width,
-                "height": height,
-                "batch_size": 1,
-            }
-        },
-        "6": {
-            "class_type": "KSampler",
-            "inputs": {
-                "model": ["3", 0],
-                "positive": ["4", 0],
-                "negative": ["4", 0],
-                "latent_image": ["5", 0],
-                "seed": seed,
-                "steps": steps,
-                "cfg": cfg,
-                "sampler_name": "euler",
-                "scheduler": "simple",
-                "denoise": 1.0,
-            }
-        },
-        "7": {
-            "class_type": "VAELoader",
-            "inputs": {
-                "vae_name": "ae.sft",
-            }
-        },
-        "8": {
-            "class_type": "VAEDecode",
-            "inputs": {
-                "samples": ["6", 0],
-                "vae": ["7", 0],
-            }
-        },
-        "9": {
-            "class_type": "SaveImage",
-            "inputs": {
-                "images": ["8", 0],
-                "filename_prefix": "api/zimg",
-            }
-        },
-    }
-
-
-def zimage_txt2img(
-    prompt_text: str,
-    width: int = 1024,
-    height: int = 1024,
-    steps: int = 8,
-    seed: int | None = None,
-) -> list[str]:
-    """Z-Image-Turbo 文生图，返回图片路径列表"""
-    prompt = build_zimage_txt2img_prompt(
-        positive_prompt=prompt_text,
-        width=width,
-        height=height,
-        steps=steps,
-        seed=seed,
-    )
-    prompt_id = queue_prompt(prompt)
-    history = poll_history(prompt_id)
-    images = get_output_images(history)
-    paths = [get_image_path(img) for img in images]
-    return paths
-
-
-
-def build_zimage_faceref_prompt(
-    positive_prompt: str,
-    face_image_path: str,
-    width: int = 1024,
-    height: int = 1024,
-    steps: int = 8,
-    cfg: float = 1.0,
-    seed: int | None = None,
-) -> dict:
-    """构建 Z-Image-Turbo 参考脸文生图 prompt"""
-    if seed is None:
-        import random
-        seed = random.randint(0, 2**53)
-
-    uploaded_face = upload_image(face_image_path)
-
-    return {
-        "1": {
-            "class_type": "CLIPLoader",
-            "inputs": {
-                "clip_name": "qwen_3_4b_fp8_mixed.safetensors",
-                "type": "qwen_image",
-            }
-        },
-        "2": {
-            "class_type": "UNETLoader",
-            "inputs": {
-                "unet_name": "z_image_turbo_bf16.safetensors",
-                "weight_dtype": "default",
-            }
-        },
-        "3": {
-            "class_type": "LoraLoader",
-            "inputs": {
-                "model": ["2", 0],
-                "clip": ["1", 0],
-                "lora_name": "z_image_turbo_distill_patch_lora_bf16.safetensors",
-                "strength_model": 1.0,
-                "strength_clip": 1.0,
-            }
-        },
-        # CLIPVisionLoader - SigLIP for Z-Image
-        "10": {
-            "class_type": "CLIPVisionLoader",
-            "inputs": {
-                "clip_name": "sigclip_vision_patch14_384.safetensors",
-            }
-        },
-        # LoadImage - face reference
-        "11": {
-            "class_type": "LoadImage",
-            "inputs": {
-                "image": uploaded_face,
-            }
-        },
-        # VAELoader
-        "7": {
-            "class_type": "VAELoader",
-            "inputs": {
-                "vae_name": "ae.sft",
-            }
-        },
-        # TextEncodeZImageOmni with face reference
-        "4": {
-            "class_type": "TextEncodeZImageOmni",
-            "inputs": {
-                "clip": ["3", 1],
-                "prompt": positive_prompt,
-                "auto_resize_images": True,
-                "image_encoder": ["10", 0],
-                "vae": ["7", 0],
-                "image1": ["11", 0],
-            }
-        },
-        # EmptyLatentImage
-        "5": {
-            "class_type": "EmptyLatentImage",
-            "inputs": {
-                "width": width,
-                "height": height,
-                "batch_size": 1,
-            }
-        },
-        # KSampler
-        "6": {
-            "class_type": "KSampler",
-            "inputs": {
-                "model": ["3", 0],
-                "positive": ["4", 0],
-                "negative": ["4", 0],
-                "latent_image": ["5", 0],
-                "seed": seed,
-                "steps": steps,
-                "cfg": cfg,
-                "sampler_name": "euler",
-                "scheduler": "simple",
-                "denoise": 1.0,
-            }
-        },
-        # VAEDecode
-        "8": {
-            "class_type": "VAEDecode",
-            "inputs": {
-                "samples": ["6", 0],
-                "vae": ["7", 0],
-            }
-        },
-        # SaveImage
-        "9": {
-            "class_type": "SaveImage",
-            "inputs": {
-                "images": ["8", 0],
-                "filename_prefix": "api/zface",
-            }
-        },
-    }
-
-
-def zimage_faceref(
-    prompt_text: str,
-    face_image_path: str,
-    width: int = 1024,
-    height: int = 1024,
-    steps: int = 8,
-    seed: int | None = None,
-) -> list[str]:
-    """Z-Image-Turbo 参考脸文生图，返回图片路径列表"""
-    prompt = build_zimage_faceref_prompt(
-        positive_prompt=prompt_text,
-        face_image_path=face_image_path,
-        width=width,
-        height=height,
-        steps=steps,
-        seed=seed,
-    )
-    prompt_id = queue_prompt(prompt)
-    history = poll_history(prompt_id)
-    images = get_output_images(history)
-    return [get_image_path(img) for img in images]
 
 
 
 def build_moody_zib_zit_prompt(
     positive_prompt: str,
     negative_prompt: str = "artifacts, model, figurine, low resolution, blurry image, overexposed, light leaks, JPEG compression, watermark, noise, body imperfections, text",
-    width: int = 640,
-    height: int = 960,
-    zib_steps: int = 17,
-    zib_cfg: float = 4.0,
-    zib_end_step: int = 12,
-    zit_steps: int = 12,
+    width: int = 1920,
+    height: int = 1080,
+    zib_steps: int = 9,
+    zib_cfg: float = 1.0,
+    zib_end_step: int = 7,
+    zit_steps: int = 9,
     zit_cfg: float = 1.0,
     zit_start_step: int = 4,
-    latent_scale: float = 1.6,
-    upscale_by: float = 1.5,
-    upscale_steps: int = 3,
-    upscale_cfg: float = 1.0,
-    upscale_denoise: float = 0.27,
     seed: int | None = None,
 ) -> dict:
+    """构建 Moody ZIB+ZIT 双模型文生图工作流（直接生成目标分辨率）"""
+    import random
+    if seed is None:
+        seed = random.randint(0, 2**53)
+
+    prompt = {
+        # CLIP + VAE
+        "1": {
+            "class_type": "CLIPLoader",
+            "inputs": {
+                "clip_name": "qwen_3_4b.safetensors",
+                "type": "lumina2",
+                "device": "default",
+            }
+        },
+        "2": {
+            "class_type": "VAELoader",
+            "inputs": {"vae_name": "ae.safetensors"}
+        },
+        # Positive / Negative prompts
+        "3": {
+            "class_type": "CLIPTextEncode",
+            "inputs": {
+                "text": positive_prompt,
+                "clip": ["1", 0],
+            }
+        },
+        "4": {
+            "class_type": "CLIPTextEncode",
+            "inputs": {
+                "text": negative_prompt,
+                "clip": ["1", 0],
+            }
+        },
+        "5": {
+            "class_type": "ConditioningZeroOut",
+            "inputs": {"conditioning": ["3", 0]}
+        },
+        # Empty latent - 直接使用目标分辨率
+        "6": {
+            "class_type": "EmptySD3LatentImage",
+            "inputs": {"width": width, "height": height, "batch_size": 1}
+        },
+        # === Stage 1: ZIB ===
+        "10": {
+            "class_type": "UNETLoader",
+            "inputs": {
+                "unet_name": "zimage base\\moody-wild-V1-distilled-10steps.safetensors",
+                "weight_dtype": "default",
+            }
+        },
+        "11": {
+            "class_type": "ModelSamplingAuraFlow",
+            "inputs": {"shift": 3.0, "model": ["10", 0]}
+        },
+        "12": {
+            "class_type": "KSamplerAdvanced",
+            "inputs": {
+                "add_noise": "enable",
+                "noise_seed": seed,
+                "control_after_generate": "randomize",
+                "steps": zib_steps,
+                "cfg": zib_cfg,
+                "sampler_name": "dpmpp_2m_sde",
+                "scheduler": "beta",
+                "start_at_step": 0,
+                "end_at_step": zib_end_step,
+                "return_with_leftover_noise": "enable",
+                "model": ["11", 0],
+                "positive": ["3", 0],
+                "negative": ["4", 0],
+                "latent_image": ["6", 0],
+            }
+        },
+        # === Stage 2: ZIT (直接在目标分辨率上继续) ===
+        "20": {
+            "class_type": "UNETLoader",
+            "inputs": {
+                "unet_name": "moodyPornMix_zitV9.safetensors",
+                "weight_dtype": "default",
+            }
+        },
+        "21": {
+            "class_type": "ModelSamplingAuraFlow",
+            "inputs": {"shift": 3.0, "model": ["20", 0]}
+        },
+        "22": {
+            "class_type": "KSamplerAdvanced",
+            "inputs": {
+                "add_noise": "disable",
+                "noise_seed": seed,
+                "control_after_generate": "randomize",
+                "steps": zit_steps,
+                "cfg": zit_cfg,
+                "sampler_name": "dpmpp_2m_sde",
+                "scheduler": "beta",
+                "start_at_step": zit_start_step,
+                "end_at_step": 10000,
+                "return_with_leftover_noise": "disable",
+                "model": ["21", 0],
+                "positive": ["3", 0],
+                "negative": ["5", 0],
+                "latent_image": ["12", 0],
+            }
+        },
+        # VAE Decode
+        "30": {
+            "class_type": "VAEDecode",
+            "inputs": {
+                "samples": ["22", 0],
+                "vae": ["2", 0],
+            }
+        },
+        # Save
+        "50": {
+            "class_type": "SaveImage",
+            "inputs": {
+                "filename_prefix": "moody",
+                "images": ["30", 0],
+            }
+        },
+    }
+    return prompt
     """构建 Moody ZIB+ZIT 双模型文生图工作流"""
     import random
     if seed is None:
@@ -1285,7 +1042,7 @@ def build_moody_zib_zit_prompt(
             "class_type": "SaveImage",
             "inputs": {
                 "filename_prefix": "moody",
-                "images": ["41", 0],
+                "images": ["30", 0],
             }
         },
     }
@@ -1295,12 +1052,13 @@ def build_moody_zib_zit_prompt(
 def moody_zib_zit(
     positive_prompt: str,
     negative_prompt: str = "artifacts, model, figurine, low resolution, blurry image, overexposed, light leaks, JPEG compression, watermark, noise, body imperfections, text",
-    width: int = 640,
-    height: int = 960,
+    width: int = 1920,
+    height: int = 1080,
     seed: int | None = None,
     timeout: int = 600,
 ) -> list[str]:
-    """Moody ZIB+ZIT 双模型文生图，返回输出图片路径列表"""
+    """Moody ZIB+ZIT 双模型文生图（直接生成 1920x1080）"""
+    print(f"[moody_zib_zit] Building prompt: {width}x{height}", flush=True)
     prompt = build_moody_zib_zit_prompt(
         positive_prompt=positive_prompt,
         negative_prompt=negative_prompt,
@@ -1308,15 +1066,15 @@ def moody_zib_zit(
         height=height,
         seed=seed,
     )
+    print(f"[moody_zib_zit] Queueing prompt...", flush=True)
     prompt_id = queue_prompt(prompt)
-    # 轮询等待
-    for _ in range(timeout):
-        time.sleep(1)
-        history = poll_history(prompt_id)
-        if history:
-            images = get_output_images(history)
-            return [get_image_path(img) for img in images]
-    raise TimeoutError(f"Moody ZIB+ZIT timed out after {timeout}s")
+    print(f"[moody_zib_zit] Prompt queued: {prompt_id}, polling...", flush=True)
+    history = poll_history(prompt_id, timeout=timeout)
+    print(f"[moody_zib_zit] Poll complete, extracting images...", flush=True)
+    images = get_output_images(history)
+    paths = [get_image_path(img) for img in images]
+    print(f"[moody_zib_zit] Done: {paths}", flush=True)
+    return paths
 
 
 def build_pulid_faceid_prompt(
@@ -1459,6 +1217,466 @@ def pulid_faceid(
             images = get_output_images(history)
             return [get_image_path(img) for img in images]
     raise TimeoutError(f"PuLID FaceID timed out after {timeout}s")
+
+
+
+
+# ============ Wan2.2 AIO I2V ============
+
+def build_wan_aio_i2v_prompt(
+    positive_prompt: str,
+    image_name: str,
+    width: int = 640,
+    height: int = 640,
+    length: int = 81,
+    steps: int = 4,
+    cfg: float = 1.0,
+    seed: int | None = None,
+    shift: float = 8.0,
+) -> dict:
+    """构建 Wan2.2 AIO I2V prompt（基于正确的工作流）"""
+    if seed is None:
+        import random
+        seed = random.randint(0, 2**53)
+
+    return {
+        "1": {
+            "class_type": "CLIPTextEncode",
+            "inputs": {"text": "", "clip": ["6", 1]}
+        },
+        "2": {
+            "class_type": "CLIPVisionLoader",
+            "inputs": {"clip_name": "clip_vision_h.safetensors"}
+        },
+        "3": {
+            "class_type": "CLIPVisionEncode",
+            "inputs": {
+                "clip_vision": ["2", 0],
+                "image": ["15", 0],
+                "crop": "none"
+            }
+        },
+        "4": {
+            "class_type": "LoadImage",
+            "inputs": {"image": image_name}
+        },
+        "5": {
+            "class_type": "VAEDecode",
+            "inputs": {
+                "samples": ["12", 0],
+                "vae": ["6", 2]
+            }
+        },
+        "6": {
+            "class_type": "CheckpointLoaderSimple",
+            "inputs": {"ckpt_name": "wan2.2-i2v-rapid-aio-v10-nsfw.safetensors"}
+        },
+        "8": {
+            "class_type": "CLIPTextEncode",
+            "inputs": {"text": positive_prompt, "clip": ["6", 1]}
+        },
+        "9": {
+            "class_type": "ModelSamplingSD3",
+            "inputs": {"model": ["6", 0], "shift": shift}
+        },
+        "10": {
+            "class_type": "WanImageToVideo",
+            "inputs": {
+                "positive": ["8", 0],
+                "negative": ["1", 0],
+                "vae": ["6", 2],
+                "clip_vision_output": ["3", 0],
+                "start_image": ["15", 0],
+                "width": ["15", 3],
+                "height": ["15", 4],
+                "length": length,
+                "batch_size": 1
+            }
+        },
+        "12": {
+            "class_type": "KSampler",
+            "inputs": {
+                "model": ["9", 0],
+                "positive": ["10", 0],
+                "negative": ["10", 1],
+                "latent_image": ["10", 2],
+                "seed": seed,
+                "steps": steps,
+                "cfg": cfg,
+                "sampler_name": "euler_ancestral",
+                "scheduler": "beta",
+                "denoise": 1.0
+            }
+        },
+        "13": {
+            "class_type": "VHS_VideoCombine",
+            "inputs": {
+                "images": ["5", 0],
+                "frame_rate": 18,
+                "loop_count": 0,
+                "filename_prefix": "api/wan_aio_i2v",
+                "format": "video/h264-mp4",
+                "pix_fmt": "yuv420p",
+                "crf": 19,
+                "save_metadata": False,
+                "trim_to_audio": False,
+                "pingpong": False,
+                "save_output": True
+            }
+        },
+        "15": {
+            "class_type": "LayerUtility: ImageScaleByAspectRatio V2",
+            "inputs": {
+                "image": ["4", 0],
+                "aspect_ratio": "original",
+                "proportional_width": 1,
+                "proportional_height": 1,
+                "fit": "letterbox",
+                "method": "lanczos",
+                "round_to_multiple": "8",
+                "scale_to_side": "shortest",
+                "scale_to_length": max(width, height),
+                "background_color": "#000000"
+            }
+        }
+    }
+
+
+def wan_aio_t2v_submit(
+    prompt_text: str,
+    width: int = 832,
+    height: int = 480,
+    length: int = 81,
+    steps: int = 4,
+    cfg: float = 1.0,
+    seed: int | None = None,
+) -> str:
+    """异步提交 Wan2.2 AIO T2V 任务，返回 prompt_id"""
+    if seed is None:
+        import random
+        seed = random.randint(0, 2**53)
+    
+    prompt = {
+        "1": {
+            "class_type": "CheckpointLoaderSimple",
+            "inputs": {"ckpt_name": "wan2.2-t2v-rapid-aio-v10-nsfw.safetensors"}
+        },
+        "2": {
+            "class_type": "ModelSamplingSD3",
+            "inputs": {"model": ["1", 0], "shift": 8.0}
+        },
+        "3": {
+            "class_type": "KSampler",
+            "inputs": {
+                "model": ["2", 0],
+                "positive": ["5", 0],
+                "negative": ["4", 0],
+                "latent_image": ["6", 0],
+                "seed": seed,
+                "steps": steps,
+                "cfg": cfg,
+                "sampler_name": "euler_ancestral",
+                "scheduler": "beta",
+                "denoise": 1.0
+            }
+        },
+        "4": {
+            "class_type": "CLIPTextEncode",
+            "inputs": {"text": "", "clip": ["1", 1]}
+        },
+        "5": {
+            "class_type": "CLIPTextEncode",
+            "inputs": {"text": prompt_text, "clip": ["1", 1]}
+        },
+        "6": {
+            "class_type": "EmptyHunyuanLatentVideo",
+            "inputs": {
+                "width": width,
+                "height": height,
+                "length": length,
+                "batch_size": 1
+            }
+        },
+        "7": {
+            "class_type": "VAEDecode",
+            "inputs": {"samples": ["3", 0], "vae": ["1", 2]}
+        },
+        "13": {
+            "class_type": "VHS_VideoCombine",
+            "inputs": {
+                "images": ["7", 0],
+                "frame_rate": 18,
+                "loop_count": 0,
+                "filename_prefix": "api/wan_aio_t2v",
+                "format": "video/h264-mp4",
+                "pix_fmt": "yuv420p",
+                "crf": 19,
+                "save_metadata": False,
+                "trim_to_audio": False,
+                "pingpong": False,
+                "save_output": True
+            }
+        }
+    }
+    
+    prompt_id = queue_prompt(prompt)
+    return prompt_id
+
+
+def wan_aio_i2v_submit(
+    prompt_text: str,
+    image_path: str,
+    width: int = 640,
+    height: int = 640,
+    length: int = 81,
+    steps: int = 4,
+    cfg: float = 1.0,
+    seed: int | None = None,
+) -> str:
+    """异步提交 Wan2.2 AIO I2V 任务，返回 prompt_id"""
+    uploaded_name = upload_image(image_path)
+    
+    prompt = build_wan_aio_i2v_prompt(
+        positive_prompt=prompt_text,
+        image_name=uploaded_name,
+        width=width,
+        height=height,
+        length=length,
+        steps=steps,
+        cfg=cfg,
+        seed=seed
+    )
+    
+    prompt_id = queue_prompt(prompt)
+    return prompt_id
+
+
+# ============ Klein9b FaceID ============
+
+def build_klein_faceid_prompt(
+    prompt_text: str,
+    face_image_name: str,
+    target_image_name: str,
+    width: int = 1024,
+    height: int = 1024,
+    steps: int = 20,
+    cfg: float = 1.0,
+    seed: int | None = None,
+) -> dict:
+    """构建 Klein9b FaceID prompt"""
+    if seed is None:
+        import random
+        seed = random.randint(0, 2**53)
+
+    return {
+        "1": {
+            "class_type": "KSamplerSelect",
+            "inputs": {
+                "sampler_name": "euler"
+            }
+        },
+        "2": {
+            "class_type": "BasicGuider",
+            "inputs": {
+                "model": ["18", 0],
+                "conditioning": ["97", 0]
+            }
+        },
+        "3": {
+            "class_type": "VAELoader",
+            "inputs": {
+                "vae_name": "flux2-vae.safetensors"
+            }
+        },
+        "4": {
+            "class_type": "CLIPLoader",
+            "inputs": {
+                "clip_name": "qwen_3_8b_fp8mixed.safetensors",
+                "type": "flux2",
+                "device": "default"
+            }
+        },
+        "5": {
+            "class_type": "CLIPTextEncode",
+            "inputs": {
+                "text": prompt_text,
+                "clip": ["4", 0]
+            }
+        },
+        "10": {
+            "class_type": "CLIPTextEncode",
+            "inputs": {
+                "text": "",
+                "clip": ["4", 0]
+            }
+        },
+        "14": {
+            "class_type": "SamplerCustomAdvanced",
+            "inputs": {
+                "noise": ["17", 0],
+                "guider": ["2", 0],
+                "sampler": ["1", 0],
+                "sigmas": ["15", 0],
+                "latent_image": ["79", 0]
+            }
+        },
+        "15": {
+            "class_type": "BasicScheduler",
+            "inputs": {
+                "scheduler": "simple",
+                "steps": steps,
+                "denoise": 1.0,
+                "model": ["18", 0]
+            }
+        },
+        "17": {
+            "class_type": "RandomNoise",
+            "inputs": {
+                "noise_seed": seed
+            }
+        },
+        "18": {
+            "class_type": "UNETLoader",
+            "inputs": {
+                "unet_name": "F2K-9b-darkBeastMar0326Latest_dbkleinv2BFS.safetensors",
+                "weight_dtype": "default"
+            }
+        },
+        "20": {
+            "class_type": "LoadImage",
+            "inputs": {
+                "image": target_image_name
+            }
+        },
+        "23": {
+            "class_type": "SaveImage",
+            "inputs": {
+                "images": ["162", 0],
+                "filename_prefix": "api/klein_faceid"
+            }
+        },
+        "79": {
+            "class_type": "EmptySD3LatentImage",
+            "inputs": {
+                "width": width,
+                "height": height,
+                "batch_size": 1
+            }
+        },
+        "80": {
+            "class_type": "GetImageSize+",
+            "inputs": {
+                "image": ["98", 0]
+            }
+        },
+        "84": {
+            "class_type": "ImageScale",
+            "inputs": {
+                "image": ["20", 0],
+                "upscale_method": "lanczos",
+                "width": ["80", 0],
+                "height": ["80", 1],
+                "crop": "disabled"
+            }
+        },
+        "91": {
+            "class_type": "LoadImage",
+            "inputs": {
+                "image": face_image_name
+            }
+        },
+        "92": {
+            "class_type": "ReferenceLatent",
+            "inputs": {
+                "conditioning": ["10", 0],
+                "latent": ["93", 0]
+            }
+        },
+        "93": {
+            "class_type": "VAEEncode",
+            "inputs": {
+                "pixels": ["98", 0],
+                "vae": ["3", 0]
+            }
+        },
+        "94": {
+            "class_type": "ReferenceLatent",
+            "inputs": {
+                "conditioning": ["5", 0],
+                "latent": ["93", 0]
+            }
+        },
+        "95": {
+            "class_type": "ReferenceLatent",
+            "inputs": {
+                "conditioning": ["92", 0],
+                "latent": ["96", 0]
+            }
+        },
+        "96": {
+            "class_type": "VAEEncode",
+            "inputs": {
+                "pixels": ["84", 0],
+                "vae": ["3", 0]
+            }
+        },
+        "97": {
+            "class_type": "ReferenceLatent",
+            "inputs": {
+                "conditioning": ["94", 0],
+                "latent": ["96", 0]
+            }
+        },
+        "98": {
+            "class_type": "ImageScale",
+            "inputs": {
+                "image": ["91", 0],
+                "upscale_method": "lanczos",
+                "width": 1024,
+                "height": 1024,
+                "crop": "center"
+            }
+        },
+        "162": {
+            "class_type": "VAEDecode",
+            "inputs": {
+                "samples": ["14", 0],
+                "vae": ["3", 0]
+            }
+        }
+    }
+
+
+def klein_faceid(
+    prompt_text: str,
+    face_image_path: str,
+    target_image_path: str,
+    width: int = 1024,
+    height: int = 1024,
+    steps: int = 20,
+    cfg: float = 1.0,
+    seed: int | None = None,
+    timeout: int = 300,
+) -> list[str]:
+    """Klein9b FaceID 换脸，返回输出路径列表"""
+    uploaded_face = upload_image(face_image_path)
+    uploaded_target = upload_image(target_image_path)
+    
+    prompt = build_klein_faceid_prompt(
+        prompt_text=prompt_text,
+        face_image_name=uploaded_face,
+        target_image_name=uploaded_target,
+        width=width,
+        height=height,
+        steps=steps,
+        cfg=cfg,
+        seed=seed
+    )
+    
+    prompt_id = queue_prompt(prompt)
+    history = poll_history(prompt_id, timeout=timeout)
+    images = get_output_images(history)
+    return [get_image_path(img) for img in images]
 
 
 if __name__ == "__main__":

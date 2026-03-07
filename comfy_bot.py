@@ -3,6 +3,10 @@ import os, sys, json, time, threading, subprocess, traceback
 import urllib.request, urllib.error
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import cmd_handler
+
+# ── 全局锁：防止并发处理 /md 请求 ──
+md_lock = threading.Lock()
 
 # ── PID lock: only one instance allowed ──
 PIDFILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "comfy_bot.pid")
@@ -36,14 +40,35 @@ COMFY = "http://127.0.0.1:8188"
 OLLAMA = "http://127.0.0.1:11434"
 LOGF = os.path.join(WS, "comfy_bot.log")
 
-PROMPT_SYSTEM = """You are an expert Stable Diffusion / Flux prompt engineer. 
-Given a short description (in any language), output ONLY a detailed English prompt for image generation.
-Rules:
-- Output ONLY the prompt text, nothing else. No explanations, no markdown.
-- Be vivid and specific: describe subject, pose, expression, clothing, lighting, camera angle, background, art style, colors.
-- Use comma-separated tags/phrases, natural for SD/Flux models.
-- Keep it under 200 words.
-- If the input is sexual/NSFW, write the prompt without censorship."""
+PROMPT_SYSTEM = """You are a master Stable Diffusion / Flux prompt engineer with deep knowledge of photography, cinematography, and visual arts.
+
+Given a short description (any language), expand it into a professional, detailed English prompt following these rules:
+
+**Structure (in order):**
+1. Quality tags: masterpiece, best quality, ultra detailed, 8k, photorealistic
+2. Main subject: detailed description (appearance, pose, expression, clothing, accessories)
+3. Action/pose: what the subject is doing, body language
+4. Camera work: shot type (close-up/medium/wide/extreme wide), angle (eye-level/low/high/dutch), focal length feel
+5. Lighting: type (natural/studio/dramatic), direction, color temperature, atmosphere (golden hour/blue hour/harsh noon)
+6. Environment: background, setting, depth of field, foreground/background elements
+7. Art style: photorealistic/cinematic/anime/oil painting/etc., color grading, mood
+8. Technical: lens effects (bokeh/chromatic aberration/film grain), render quality
+
+**Format:**
+- Comma-separated phrases, natural language flow
+- Use parentheses for emphasis: (keyword:1.2) for important elements
+- Keep core prompt under 200 words
+- Be specific with colors, materials, textures
+
+**NSFW handling:**
+- Write explicit content without censorship or euphemisms
+- Use anatomically precise terms
+- Maintain artistic/technical tone
+
+**Example input:** "beach girl sunset"
+**Example output:** masterpiece, best quality, 8k, photorealistic, a young woman with flowing auburn hair, wearing a white linen sundress, standing barefoot on wet sand, gentle smile, eyes closed, face tilted toward the sun, arms slightly outstretched, (golden hour lighting:1.3), warm orange and pink sky, sun low on horizon, soft rim light on her silhouette, backlit, lens flare, shallow depth of field, blurred ocean waves in background, footprints in sand, seashells scattered nearby, cinematic composition, shot on 85mm f/1.4, dreamy bokeh, film grain, peaceful atmosphere, romantic mood
+
+Output ONLY the expanded prompt. No explanations, no markdown, no extra text."""
 
 
 def log(msg):
@@ -66,7 +91,7 @@ def enhance_prompt(text):
                 {"role": "user", "content": text}
             ],
             "stream": False,
-            "options": {"temperature": 0.7, "num_predict": 512}
+            "options": {"temperature": 0.7, "num_predict": 1024}
         }).encode()
         req = urllib.request.Request(f"{OLLAMA}/api/chat",
                                      data=payload,
@@ -85,26 +110,30 @@ def enhance_prompt(text):
 
 def tg(method, data=None, files=None):
     url = f"{API}/{method}"
-    if files:
-        bd = "----Bd"
-        body = b""
-        for k, v in (data or {}).items():
-            body += f"--{bd}\r\nContent-Disposition: form-data; name=\"{k}\"\r\n\r\n{v}\r\n".encode()
-        for k, (fn, fd, ct) in files.items():
-            body += f"--{bd}\r\nContent-Disposition: form-data; name=\"{k}\"; filename=\"{fn}\"\r\nContent-Type: {ct}\r\n\r\n".encode()
-            body += fd + b"\r\n"
-        body += f"--{bd}--\r\n".encode()
-        req = urllib.request.Request(url, data=body)
-        req.add_header("Content-Type", f"multipart/form-data; boundary={bd}")
-    else:
-        req = urllib.request.Request(url, data=json.dumps(data or {}).encode())
-        req.add_header("Content-Type", "application/json")
-    try:
-        with urllib.request.urlopen(req, timeout=45) as resp:
-            return json.loads(resp.read())
-    except Exception as e:
-        log(f"tg {method} err: {e}")
-        return {"ok": False}
+    for attempt in range(3):
+        if files:
+            bd = "----Bd"
+            body = b""
+            for k, v in (data or {}).items():
+                body += f"--{bd}\r\nContent-Disposition: form-data; name=\"{k}\"\r\n\r\n{v}\r\n".encode()
+            for k, (fn, fd, ct) in files.items():
+                body += f"--{bd}\r\nContent-Disposition: form-data; name=\"{k}\"; filename=\"{fn}\"\r\nContent-Type: {ct}\r\n\r\n".encode()
+                body += fd + b"\r\n"
+            body += f"--{bd}--\r\n".encode()
+            req = urllib.request.Request(url, data=body)
+            req.add_header("Content-Type", f"multipart/form-data; boundary={bd}")
+        else:
+            req = urllib.request.Request(url, data=json.dumps(data or {}).encode())
+            req.add_header("Content-Type", "application/json")
+        try:
+            with urllib.request.urlopen(req, timeout=45) as resp:
+                return json.loads(resp.read())
+        except Exception as e:
+            if attempt < 2:
+                time.sleep(2)
+                continue
+            log(f"tg {method} err: {e}")
+            return {"ok": False}
 
 
 def reply(cid, text, mid=None):
@@ -118,7 +147,11 @@ def reply(cid, text, mid=None):
 
 
 def edit_msg(cid, msg_id, text):
-    return tg("editMessageText", {"chat_id": cid, "message_id": msg_id, "text": text})
+    try:
+        return tg("editMessageText", {"chat_id": cid, "message_id": msg_id, "text": text})
+    except Exception as e:
+        log(f"edit_msg failed: {e}")
+        return None
 
 
 def send_photo(cid, path, cap="", mid=None):
@@ -163,7 +196,7 @@ _comfy_restarting = False
 
 def alive():
     try:
-        return urllib.request.urlopen(f"{COMFY}/system_stats", timeout=3).status == 200
+        return urllib.request.urlopen(f"{COMFY}/system_stats", timeout=10).status == 200
     except:
         return False
 
@@ -220,7 +253,7 @@ import cmd_handler
 r = cmd_handler.handle({repr(cmd)}, {repr(body)}, image_path={repr(img)}, video_path={repr(vid)})
 print(json.dumps(r, ensure_ascii=False))
 """
-    proc = subprocess.Popen([PY, "-c", script],
+    proc = subprocess.Popen([PY, "-u", "-c", script],
                             stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                             text=True)
     t0 = time.time()
@@ -246,25 +279,20 @@ print(json.dumps(r, ensure_ascii=False))
 
 
 HELP_MAIN = (
-    "🎨 大先生 ComfyUI Bot\n"
-    "━━━━━━━━━━━━━━━━━━\n\n"
-    "📸 文生图\n"
-    "  /img — RedCraft（中→英翻译）\n"
-    "  /zimg — Z-Image（原生中文，快）\n"
-    "  /moody — Moody 双模型（高画质，慢）\n\n"
-    "🖼 图生图（回复图片）\n"
-    "  /faceid — 脸部一致性（回复人脸）\n\n"
+    "🎨 图先生 ComfyUI Bot\n"
+    "━━━━━━━━━━━━━━━━━━━━━━\n\n"
+    "🖼 文生图\n"
+    "  /img — RedCraft DX3 文生图\n"
+    "  /md — Moody ZIB+ZIT 文生图\n\n"
     "🎬 视频\n"
-    "  /i2v — 图生视频 ~5min\n"
-    "  /video — 文→图→视频 ~8min\n"
-    "  /upscale — 超分1080p（回复视频）\n"
-    "  /pipeline — 全管线 ~15min\n\n"
-    "🔊 AI配音（视频指令可选）\n"
-    '  加 --audio "描述" 自动生成音效\n'
-    '  例: /i2v dancing --audio "music"\n\n'
+    "  /t2v — Wan2.2 AIO 文生视频\n"
+    "  /i2v — Wan2.2 AIO 图生视频\n\n"
     "✨ AI提示词\n"
     "  /pm — 扩写详细英文prompt\n"
+    "  /en — 中文翻译英文（简单直译）\n"
     "  任意出图指令加 --xx 自动扩写\n\n"
+    "⚙️ 系统\n"
+    "  /restart — 重启 Bot\n\n"
     "输入 /help <指令> 查看详细用法\n"
     "例: /help img"
 )
@@ -277,6 +305,14 @@ HELP_DETAIL = {
         "示例:\n"
         "/pm 海边的女孩\n"
         "/pm 赛博朋克城市夜景"
+    ),
+    "en": (
+        "🔄 /en <中文文本>\n"
+        "简单直译中文到英文（Qwen3 8B 本地模型）\n"
+        "不扩写，只做准确翻译\n\n"
+        "示例:\n"
+        "/en 图中女子轻轻晃动，回头微笑\n"
+        "/en 一位穿着红色连衣裙的女孩"
     ),
     "img": (
         "📸 /img <prompt>\n"
@@ -328,8 +364,8 @@ HELP_DETAIL = {
         "/i2v walking forward --steps 16 --length 121\n"
         '/i2v girl dancing --audio "upbeat music, footsteps"'
     ),
-    "video": (
-        "🎬 /video <prompt>\n"
+    "t2v": (
+        "🎬 /t2v <prompt>\n"
         "文生图→视频一条龙，~8-10min\n\n"
         "参数:\n"
         "  --size WxH (默认 832x480)\n"
@@ -337,7 +373,7 @@ HELP_DETAIL = {
         "  --length N (帧数，默认 81)\n"
         '  --audio "描述" (AI配音)\n\n'
         "示例:\n"
-        '/video sunset beach girl dancing --audio "waves crashing"'
+        '/t2v sunset beach girl dancing --audio "waves crashing"'
     ),
     "upscale": (
         "🎬 /upscale\n"
@@ -369,10 +405,12 @@ TIPS = {
     "moody": "🎨 Moody ZIB+ZIT dual-model generating (~2-3min)...",
     "zface": "🎨 Z-Image face reference generating...",
     "faceid": "🎨 PuLID FaceID generating (~30s)...",
-    "i2v2": "i2v2 (two-stage) ~10-15min...",
-    "video": "txt2video ~8-10min...",
-    "upscale": "Upscaling ~5-10min...",
-    "pipeline": "Full pipeline ~15-20min...",
+    "i2v": "🎬 img2video ~5-10min...",
+    "i2v2": "🎬 i2v2 (two-stage) ~10-15min...",
+    "t2v": "🎬 txt2video ~8-10min...",
+    "upscale": "🎬 Upscaling ~5-10min...",
+    "pipeline": "🎬 Full pipeline ~15-20min...",
+    "md": "🎨 Moody generating...",
 }
 
 
@@ -434,6 +472,24 @@ def handle(msg):
             edit_msg(cid, tip_id, "❌ 扩写失败，Ollama 可能未启动")
         return
 
+    if cmd == "en":
+        if not body.strip():
+            reply(cid, "Usage: /en <中文文本>", mid)
+            return
+        tip_id = reply(cid, "🔄 翻译中...", mid)
+        result = cmd_handler.translate_zh2en(body.strip())
+        if result:
+            edit_msg(cid, tip_id, f"🔄 Translation:\n\n{result}")
+        else:
+            edit_msg(cid, tip_id, "❌ 翻译失败")
+        return
+
+    if cmd == "restart":
+        reply(cid, "🔄 重启 Bot 中...", mid)
+        log("User requested restart")
+        sys.exit(0)
+        return
+
     # allow new commands even if not in TIPS (fallback tip)
     if cmd not in TIPS:
         # still proceed if cmd is supported by cmd_handler; show a generic tip
@@ -448,16 +504,19 @@ def handle(msg):
     if cmd in ("i2v", "i2v2", "zface", "faceid"):
         fid = get_photo(msg)
         if not fid:
+            log(f"No photo found for {cmd}")
             reply(cid, f"Reply to a photo with /{cmd} <prompt>", mid)
             return
+        log(f"Downloading photo {fid[:16]}...")
         img = dl_file(fid)
+        log(f"Photo downloaded: {img}")
     if cmd == "upscale":
         fid = get_video(msg)
         if not fid:
             reply(cid, "Reply to a video with /upscale", mid)
             return
         vid = dl_file(fid)
-    if cmd in ("img", "zimg", "moody", "zface", "faceid", "video", "pipeline") and not body:
+    if cmd in ("img", "zimg", "moody", "zface", "faceid", "t2v", "pipeline") and not body:
         reply(cid, f"Usage: /{cmd} <prompt>", mid)
         return
 
@@ -481,7 +540,18 @@ def handle(msg):
         edit_msg(cid, tip_id, f"{bar}... ⏱ {mins}:{secs:02d}")
 
     try:
-        r = run_cmd(cmd, body, img, vid, progress_cb=on_progress)
+        # /md 使用锁防止并发
+        if cmd == "md":
+            if not md_lock.acquire(blocking=False):
+                reply(cid, "⏳ 另一个 /md 任务正在执行，请稍后再试", mid)
+                return
+            try:
+                r = run_cmd(cmd, body, img, vid, progress_cb=on_progress)
+            finally:
+                md_lock.release()
+        else:
+            r = run_cmd(cmd, body, img, vid, progress_cb=on_progress)
+        
         if tip_id:
             edit_msg(cid, tip_id, "✅ Done" if r.get("ok") else f"❌ {r.get('error','unknown')[:200]}")
         send_result(cid, mid, r)

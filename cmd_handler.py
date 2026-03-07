@@ -15,16 +15,22 @@ def translate_zh2en(text):
     if not has_chinese(text):
         return text
     try:
-        url = "https://translate.googleapis.com/translate_a/single"
-        params = urllib.parse.urlencode({
-            "client": "gtx", "sl": "zh-CN", "tl": "en",
-            "dt": "t", "q": text
-        })
-        req = urllib.request.Request(f"{url}?{params}")
-        req.add_header("User-Agent", "Mozilla/5.0")
-        with urllib.request.urlopen(req, timeout=10) as r:
-            data = json.loads(r.read())
-            return "".join(seg[0] for seg in data[0] if seg[0])
+        # 使用本地 Ollama Qwen3 翻译
+        url = "http://127.0.0.1:11434/api/chat"
+        payload = {
+            "model": "qwen3:8b",
+            "messages": [
+                {"role": "system", "content": "You are a professional translator."},
+                {"role": "user", "content": f"Translate to English: {text}"}
+            ],
+            "stream": False
+        }
+        req = urllib.request.Request(url, data=json.dumps(payload).encode(), 
+                                     headers={"Content-Type": "application/json"})
+        with urllib.request.urlopen(req, timeout=15) as r:
+            result = json.loads(r.read())
+            content = result.get("message", {}).get("content", "").strip()
+            return content if content else text
     except Exception:
         return text
 
@@ -61,93 +67,49 @@ def handle(cmd, body, image_path=None, video_path=None):
     cmd = cmd.lower().strip('/')
     raw, opts = parse_args(body)
     en = translate_zh2en(raw) if raw else ""
+    
+    # 记录翻译结果
+    if raw and has_chinese(raw):
+        print(f"[TRANSLATE]\nChinese: {raw}\nEnglish: {en}\n", flush=True)
 
     if cmd == "img":
-        w, h = parse_size(opts.get("size"), 1024, 1024)
+        w, h = parse_size(opts.get("size"), 1920, 1080)
         return _r(comfy_runner.txt2img(en, w, h, int(opts.get("steps", 5))),
                   "image", en)
 
-    if cmd == "zimg":
-        w, h = parse_size(opts.get("size"), 1024, 1024)
-        # Z-Image-Turbo 原生中文，不翻译
-        return _r(comfy_runner.zimg_txt2img(raw, w, h, int(opts.get("steps", 8))),
-                  "image", raw)
 
-    if cmd == "zface":
-        if not image_path:
-            return {"ok": False, "error": "need face image (reply photo)"}
-        w, h = parse_size(opts.get("size"), 1024, 1024)
-        return _r(comfy_runner.zimg_faceref(raw, image_path, w, h,
-                  int(opts.get("steps", 8))), "image", raw)
 
-    if cmd == "faceid":
-        if not image_path:
-            return {"ok": False, "error": "need face image (reply photo)"}
-        w, h = parse_size(opts.get("size"), 640, 960)
-        return _r(comfy_runner.pulid_faceid(raw, image_path, w, h,
-                  int(opts.get("steps", 20)),
-                  float(opts.get("weight", 1.0))),
-                  "image", raw)
-
-    if cmd == "moody":
-        w, h = parse_size(opts.get("size"), 640, 960)
+    if cmd == "md":
+        w, h = parse_size(opts.get("size"), 1920, 1080)
         # Moody 原生中文，不翻译
         return _r(comfy_runner.moody_txt2img(raw, w, h), "image", raw)
+
+    if cmd == "t2v":
+        w, h = parse_size(opts.get("size"), 832, 480)
+        steps = int(opts.get("steps", 4))
+        return _r(comfy_runner.txt2video(en, w, h,
+                  int(opts.get("length", 81)), steps), "video", en)
 
     if cmd == "i2v":
         if not image_path:
             return {"ok": False, "error": "need image"}
-        # 默认按竖图（A：人像）更稳：576x1024，默认 5 秒（source_fps=16 → length=80）
-        w, h = parse_size(opts.get("size"), 576, 1024)
-        steps = int(opts.get("steps", 10))
-        audio = opts.get("audio")
+        w, h = parse_size(opts.get("size"), 640, 640)
+        steps = int(opts.get("steps", 4))
         return _r(comfy_runner.img2video(en, image_path, w, h,
-                  int(opts.get("length", 80)), steps,
-                  high_steps=steps // 2,
-                  audio_prompt=audio), "video", en)
+                  int(opts.get("length", 81)), steps), "video", en)
 
-    if cmd == "i2v2":
-        # i2v2 同 i2v：必须回复图片
+    if cmd == "id":
         if not image_path:
-            return {"ok": False, "error": "need image (reply to a photo)"}
-        w, h = parse_size(opts.get("size"), 576, 1024)
-        steps = int(opts.get("steps", 10))
-        # A 段 / B 段 prompt：用 ||| 分隔
-        if "|||" not in en:
-            return {"ok": False, "error": "need two prompts separated by |||"}
-        a, b = [x.strip() for x in en.split("|||", 1)]
-        len_a = int(opts.get("len_a", 48))
-        len_b = int(opts.get("len_b", 32))
-        fps = int(opts.get("fps", 25))
-        return _r(comfy_runner.i2v_two_stage(a, b, image_path, w, h,
-                  length_a=len_a, length_b=len_b,
-                  steps=steps, high_steps=steps // 2,
-                  fps=fps), "video", en)
+            return {"ok": False, "error": "need face image (reply to face photo)"}
+        # Klein9b FaceID 需要两张图：face_image (回复的图) + target_image (--target 参数)
+        target = opts.get("target")
+        if not target:
+            return {"ok": False, "error": "need --target <target_image_path>"}
+        w, h = parse_size(opts.get("size"), 1024, 1024)
+        steps = int(opts.get("steps", 20))
+        return _r(comfy_runner.klein_faceid(en, image_path, target, w, h, steps),
+                  "image", en)
 
-    if cmd == "video":
-        # 默认按竖图（A：人像）更稳：576x1024，默认 5 秒（source_fps=16 → length=80）
-        w, h = parse_size(opts.get("size"), 576, 1024)
-        steps = int(opts.get("steps", 10))
-        audio = opts.get("audio")
-        return _r(comfy_runner.video(en, w, h,
-                  int(opts.get("length", 80)), steps,
-                  high_steps=steps // 2,
-                  audio_prompt=audio), "video", en)
 
-    if cmd == "upscale":
-        if not video_path:
-            return {"ok": False, "error": "need video path"}
-        return _r(comfy_runner.upscale(video_path,
-                  resolution=int(opts.get("res", 1080))), "video", "")
-
-    if cmd == "pipeline":
-        w, h = parse_size(opts.get("size"), 832, 480)
-        steps = int(opts.get("steps", 12))
-        audio = opts.get("audio")
-        return _r(comfy_runner.pipeline(en, w, h,
-                  int(opts.get("length", 81)), steps,
-                  high_steps=steps // 2,
-                  resolution=int(opts.get("res", 1080)),
-                  audio_prompt=audio), "video", en)
 
     return {"ok": False, "error": f"unknown cmd: /{cmd}"}
