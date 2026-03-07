@@ -16,6 +16,13 @@ def compress_prompt(text, max_chars=380):
     if len(text) <= max_chars:
         return text, False
     
+    print(f"[COMPRESS] Starting compression: {len(text)} chars", flush=True)
+    
+    # 如果超过 1000 字符，先截断再压缩（避免 Ollama 处理时间过长）
+    if len(text) > 1000:
+        print(f"[COMPRESS] Text too long, pre-truncating to 800 chars", flush=True)
+        text = text[:800]
+    
     try:
         url = "http://127.0.0.1:11434/api/chat"
         payload = {
@@ -28,17 +35,21 @@ def compress_prompt(text, max_chars=380):
         }
         req = urllib.request.Request(url, data=json.dumps(payload).encode(),
                                      headers={"Content-Type": "application/json"})
-        with urllib.request.urlopen(req, timeout=20) as r:
+        with urllib.request.urlopen(req, timeout=30) as r:
             result = json.loads(r.read())
             compressed = result.get("message", {}).get("content", "").strip()
             if compressed and len(compressed) < len(text):
-                print(f"[COMPRESS] {len(text)} → {len(compressed)} chars", flush=True)
+                print(f"[COMPRESS] Success: {len(text)} → {len(compressed)} chars", flush=True)
                 return compressed, True
+            else:
+                print(f"[COMPRESS] No improvement, using truncation", flush=True)
     except Exception as e:
         print(f"[COMPRESS] Failed: {e}, using truncation", flush=True)
     
     # 压缩失败，直接截断
-    return text[:max_chars] + "...", True
+    truncated = text[:max_chars]
+    print(f"[COMPRESS] Truncated to {len(truncated)} chars", flush=True)
+    return truncated, True
 
 
 def translate_zh2en(text):
