@@ -123,6 +123,12 @@ def queue_prompt(prompt: dict, client_id: str | None = None) -> str:
         with urllib.request.urlopen(req, timeout=30) as resp:
             result = json.loads(resp.read())
         return result["prompt_id"]
+    except urllib.error.HTTPError as e:
+        try:
+            body = e.read().decode("utf-8", errors="replace")
+        except Exception:
+            body = ""
+        raise RuntimeError(f"Failed to queue prompt: HTTP {e.code} {e.reason}; body={body}")
     except Exception as e:
         raise RuntimeError(f"Failed to queue prompt: {e}")
 

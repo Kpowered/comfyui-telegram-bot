@@ -193,13 +193,15 @@ def send_video(cid, path, cap="", mid=None):
         return {"ok": False, "error": str(e)}
 
 
-def dl_file(file_id):
+def dl_file(file_id, label=None):
     r = tg("getFile", {"file_id": file_id})
     if not r.get("ok"):
         return None
     fp = r["result"]["file_path"]
-    ext = ".mp4" if "video" in fp or fp.endswith(".mp4") else ".jpg"
-    local = os.path.join(WS, f"tg_{file_id[:8]}{ext}")
+    ext = os.path.splitext(fp)[1].lower() or (".mp4" if "video" in fp else ".jpg")
+    stamp = int(time.time() * 1000)
+    safe_label = f"_{label}" if label else ""
+    local = os.path.join(WS, f"tg{safe_label}_{file_id[:8]}_{stamp}{ext}")
     urllib.request.urlretrieve(f"https://api.telegram.org/file/bot{TOKEN}/{fp}", local)
     return local
 
@@ -597,7 +599,7 @@ def handle(msg):
             reply(cid, f"Reply to a photo with /{cmd} <prompt>", mid)
             return
         log(f"Downloading photo {fid[:16]}...")
-        img = dl_file(fid)
+        img = dl_file(fid, cmd)
         log(f"Photo downloaded: {img}")
     if cmd == "face":
         face_fid = get_current_photo(msg)
@@ -606,17 +608,17 @@ def handle(msg):
             reply(cid, "用法：回复目标图，再发送参考脸图片，并在 caption 里写 /face 或 /face <prompt>", mid)
             return
         log(f"Downloading face photo {face_fid[:16]}...")
-        img = dl_file(face_fid)
+        img = dl_file(face_fid, "face_ref")
         log(f"Face photo downloaded: {img}")
         log(f"Downloading target photo {target_fid[:16]}...")
-        target_img = dl_file(target_fid)
+        target_img = dl_file(target_fid, "face_target")
         log(f"Target photo downloaded: {target_img}")
     if cmd == "upscale":
         fid = get_video(msg)
         if not fid:
             reply(cid, "Reply to a video with /upscale", mid)
             return
-        vid = dl_file(fid)
+        vid = dl_file(fid, "video")
     if cmd in ("img", "zimg", "moody", "zface", "faceid", "t2v", "pipeline") and not body:
         reply(cid, f"Usage: /{cmd} <prompt>", mid)
         return
