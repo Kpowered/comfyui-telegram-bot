@@ -137,13 +137,18 @@ def tg(method, data=None, files=None):
 
 
 def reply(cid, text, mid=None):
-    d = {"chat_id": cid, "text": text}
-    if mid:
-        d["reply_to_message_id"] = mid
-    r = tg("sendMessage", d)
-    if r.get("ok"):
-        return r["result"]["message_id"]
-    return None
+    try:
+        d = {"chat_id": cid, "text": text}
+        if mid:
+            d["reply_to_message_id"] = mid
+        r = tg("sendMessage", d)
+        if r.get("ok"):
+            return r["result"]["message_id"]
+        log(f"reply failed cid={cid} mid={mid} resp={r}")
+        return None
+    except Exception as e:
+        log(f"reply exception cid={cid} mid={mid}: {e}\n{traceback.format_exc()}")
+        return None
 
 
 def edit_msg(cid, msg_id, text):
@@ -155,23 +160,37 @@ def edit_msg(cid, msg_id, text):
 
 
 def send_photo(cid, path, cap="", mid=None):
-    d = {"chat_id": str(cid)}
-    if cap:
-        d["caption"] = cap[:1024]
-    if mid:
-        d["reply_to_message_id"] = str(mid)
-    with open(path, "rb") as f:
-        return tg("sendPhoto", d, {"photo": (os.path.basename(path), f.read(), "image/png")})
+    try:
+        d = {"chat_id": str(cid)}
+        if cap:
+            d["caption"] = cap[:1024]
+        if mid:
+            d["reply_to_message_id"] = str(mid)
+        with open(path, "rb") as f:
+            r = tg("sendPhoto", d, {"photo": (os.path.basename(path), f.read(), "image/png")})
+        if not r.get("ok"):
+            log(f"send_photo failed cid={cid} path={path} resp={r}")
+        return r
+    except Exception as e:
+        log(f"send_photo exception cid={cid} path={path}: {e}\n{traceback.format_exc()}")
+        return {"ok": False, "error": str(e)}
 
 
 def send_video(cid, path, cap="", mid=None):
-    d = {"chat_id": str(cid)}
-    if cap:
-        d["caption"] = cap[:1024]
-    if mid:
-        d["reply_to_message_id"] = str(mid)
-    with open(path, "rb") as f:
-        return tg("sendVideo", d, {"video": (os.path.basename(path), f.read(), "video/mp4")})
+    try:
+        d = {"chat_id": str(cid)}
+        if cap:
+            d["caption"] = cap[:1024]
+        if mid:
+            d["reply_to_message_id"] = str(mid)
+        with open(path, "rb") as f:
+            r = tg("sendVideo", d, {"video": (os.path.basename(path), f.read(), "video/mp4")})
+        if not r.get("ok"):
+            log(f"send_video failed cid={cid} path={path} resp={r}")
+        return r
+    except Exception as e:
+        log(f"send_video exception cid={cid} path={path}: {e}\n{traceback.format_exc()}")
+        return {"ok": False, "error": str(e)}
 
 
 def dl_file(file_id):
@@ -465,20 +484,25 @@ def get_video(msg):
 
 
 def send_result(cid, mid, res):
-    if not res.get("ok"):
-        reply(cid, "Error: " + res.get("error", "unknown"), mid)
-        return
-    cap = res.get("prompt_en", "")[:1024]
-    
-    if res.get("compressed"):
-        cap = "⚠️ 提示词过长，已自动压缩总结\n\n" + cap
-    if res.get("truncated"):
-        cap = "⚠️ 提示词过长，已自动截断\n\n" + cap
-    
-    if res.get("type") == "video":
-        send_video(cid, res["path"], cap, mid)
-    else:
-        send_photo(cid, res["path"], cap, mid)
+    try:
+        if not res.get("ok"):
+            reply(cid, "Error: " + res.get("error", "unknown"), mid)
+            return
+        cap = res.get("prompt_en", "")[:1024]
+
+        if res.get("compressed"):
+            cap = "⚠️ 提示词过长，已自动压缩总结\n\n" + cap
+        if res.get("truncated"):
+            cap = "⚠️ 提示词过长，已自动截断\n\n" + cap
+
+        if res.get("type") == "video":
+            r = send_video(cid, res["path"], cap, mid)
+        else:
+            r = send_photo(cid, res["path"], cap, mid)
+        log(f"send_result done cid={cid} type={res.get('type')} ok={r.get('ok') if isinstance(r, dict) else 'unknown'} path={res.get('path')}")
+    except Exception as e:
+        log(f"send_result exception cid={cid}: {e}\n{traceback.format_exc()}")
+        reply(cid, f"Error: {e}", mid)
 
 
 def handle(msg):
@@ -598,7 +622,7 @@ def handle(msg):
             edit_msg(cid, tip_id, "✅ Done" if r.get("ok") else f"❌ {r.get('error','unknown')[:200]}")
         send_result(cid, mid, r)
     except Exception as e:
-        log(f"handle err: {e}")
+        log(f"handle err cid={cid} cmd=/{cmd}: {e}\n{traceback.format_exc()}")
         reply(cid, f"Error: {e}", mid)
 
 
