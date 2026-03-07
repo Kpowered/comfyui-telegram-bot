@@ -117,8 +117,8 @@ def handle(cmd, body, image_path=None, video_path=None):
     truncated = False
 
     # /img 先截原始中文/原文，再翻译，避免长 prompt 卡死在翻译阶段
-    if cmd == "img" and raw and len(raw) > 500:
-        raw = raw[:500]
+    if cmd == "img" and raw and len(raw) > 800:
+        raw = raw[:800]
         truncated = True
 
     en = translate_zh2en(raw) if raw else ""
@@ -126,8 +126,8 @@ def handle(cmd, body, image_path=None, video_path=None):
     # 调试输出静音：避免子进程因 stdout 管道挂住
 
     # /img 再做英文长度硬截断
-    if cmd == "img" and len(en) > 380:
-        en = en[:380]
+    if cmd == "img" and len(en) > 600:
+        en = en[:600]
         truncated = True
 
     if cmd == "img":
