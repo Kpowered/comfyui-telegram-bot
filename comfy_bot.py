@@ -352,7 +352,7 @@ HELP_MAIN = (
     "⚙️ 系统\n"
     "  /restart — 重启 Bot\n\n"
     "输入 /help <指令> 查看详细用法\n"
-    "例: /help img"
+    "例: /help img /help face"
 )
 
 HELP_DETAIL = {
