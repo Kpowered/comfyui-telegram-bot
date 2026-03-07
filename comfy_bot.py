@@ -281,74 +281,37 @@ def comfy_progress():
 
 
 def run_cmd(cmd, body, img=None, vid=None, progress_cb=None):
-    script = f"""
-import sys, json
-sys.path.insert(0, r'{WS}')
-import cmd_handler
-r = cmd_handler.handle({repr(cmd)}, {repr(body)}, image_path={repr(img)}, video_path={repr(vid)})
-print('__RESULT_START__')
-print(json.dumps(r, ensure_ascii=False))
-print('__RESULT_END__')
-sys.stdout.flush()
-"""
-    proc = subprocess.Popen([PY, "-u", "-c", script],
-                            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                            text=True, bufsize=1)
     t0 = time.time()
-    last_update = 0
     timeout = 600  # 10分钟超时
+    result = {"ok": False, "error": f"timeout {timeout}s"}
+    done = threading.Event()
 
-    while proc.poll() is None:
+    def worker():
+        nonlocal result
+        try:
+            result = cmd_handler.handle(cmd, body, image_path=img, video_path=vid)
+        except Exception as e:
+            log(f"run_cmd direct error cmd=/{cmd}: {e}\n{traceback.format_exc()}")
+            result = {"ok": False, "error": str(e)}
+        finally:
+            done.set()
+
+    th = threading.Thread(target=worker, daemon=True)
+    th.start()
+
+    last_update = 0
+    while not done.wait(timeout=1):
         elapsed = time.time() - t0
         if elapsed > timeout:
-            log(f"Process timeout after {timeout}s, killing PID {proc.pid}")
-            try:
-                proc.kill()
-                proc.wait(timeout=5)
-            except:
-                pass
-            return {"ok": False, "error": f"timeout {timeout}s"}
+            log(f"run_cmd direct timeout cmd=/{cmd} after {timeout}s")
+            return result
         if progress_cb and elapsed - last_update >= 15:
             last_update = elapsed
             progress_cb(elapsed)
-        time.sleep(1)
 
-    try:
-        stdout, stderr = proc.communicate(timeout=5)
-    except Exception as e:
-        log(f"run_cmd communicate error cmd=/{cmd}: {e}")
-        stdout = ""
-        stderr = ""
-
-    stdout = stdout or ""
-    stderr = stderr or ""
-    log(f"run_cmd finished cmd=/{cmd} rc={proc.returncode} stdout_len={len(stdout)} stderr_len={len(stderr)}")
-
-    if proc.returncode != 0:
-        log(f"run_cmd error stderr_tail={stderr[-400:] if stderr else 'EMPTY'}")
-        return {"ok": False, "error": stderr[-500:] if stderr else "unknown"}
-
-    try:
-        start_marker = '__RESULT_START__'
-        end_marker = '__RESULT_END__'
-        start_idx = stdout.find(start_marker)
-        end_idx = stdout.find(end_marker)
-        if start_idx != -1 and end_idx != -1:
-            json_str = stdout[start_idx + len(start_marker):end_idx].strip()
-            log(f"run_cmd markers found cmd=/{cmd} json_len={len(json_str)}")
-            return json.loads(json_str)
-    except Exception as e:
-        log(f"JSON parse error: {e}; stdout_tail={stdout[-400:]}")
-
-    lines = [l for l in stdout.strip().split("\n") if l.strip()]
-    if not lines:
-        log(f"run_cmd no output cmd=/{cmd} stdout_tail={stdout[-400:] if stdout else 'EMPTY'} stderr_tail={stderr[-400:] if stderr else 'EMPTY'}")
-        return {"ok": False, "error": "no output"}
-    try:
-        return json.loads(lines[-1])
-    except:
-        log(f"run_cmd parse fallback failed cmd=/{cmd} last_line={lines[-1][:300]}")
-        return {"ok": False, "error": f"parse failed, last line: {lines[-1][:200]}"}
+    elapsed = time.time() - t0
+    log(f"run_cmd direct finished cmd=/{cmd} elapsed={elapsed:.1f}s ok={result.get('ok')}")
+    return result
 
 
 HELP_MAIN = (
