@@ -159,9 +159,21 @@ curl http://127.0.0.1:8188/queue | ConvertFrom-Json
 ### 2026-03-07
 - ✅ 修复 `/md` 命令显存不足问题（去掉 UltimateSDUpscale）
 - ✅ 修复 `poll_history` 逻辑错误（先检查队列，再检查 history）
-- ✅ 添加子进程实时日志输出（`-u` 参数）
 - ✅ 修复 `edit_msg` 错误处理（即使编辑失败也继续发送结果）
-- ✅ 默认分辨率改为 1920x1080
+- ✅ `/img` 默认分辨率改为 1920x1080
+- ✅ 长 `/img` 提示词策略改为：先截原文，再翻译，再截英文，避免卡死在翻译阶段
+- ✅ 彻底移除 `python -c` 子进程 + stdout/JSON 回传链路，改为 Bot 主进程内直接调用 `cmd_handler.handle()`
+- ✅ 静音 `cmd_handler.py` / `comfyui_api.py` 的调试输出，避免“ComfyUI 已出图但 Bot 卡在 Generating / no output”
+
+### 长提示词稳定性说明
+- `/img` 的稳定策略不是“智能压缩”，而是**硬截断优先**。
+- 当前顺序：**原文先截断 → 再翻译 → 英文再截断 → 提交 ComfyUI**。
+- 这样做的原因：超长中文 prompt 先整段翻译，容易把 Ollama/子流程拖死；先截断原文更稳。
+- 当提示词过长时，Bot 会提示：`⚠️ 提示词过长，已自动截断`
+
+### 关键踩坑结论
+- 如果出现“ComfyUI 已出图，但 Telegram Bot 仍显示 Generating / 返回 no output”，优先怀疑 **Bot 进程间通信或 stdout/stderr 管道**，不要先怀疑 ComfyUI。
+- 本项目已验证：最稳的做法是**主进程内直接调用命令处理器**，不要再通过 `python -c` 子进程回传 JSON。
 
 ## 许可证
 

@@ -23,6 +23,56 @@
 
 ---
 
+### [2026-03-07] Telegram Bot 子进程 IPC 会导致“已出图但 no output / 一直 Generating”
+**问题**：ComfyUI 后台已经成功出图，workspace 里也已经复制出了 `img_*.png` / `moody_*.png`，但 Telegram Bot 仍然返回 `Error: no output`，或者永远卡在 `Generating`。
+
+**根本原因**：
+- 旧架构使用 `subprocess.Popen([PY, "-u", "-c", script], ...)` 启动子进程执行 `cmd_handler.handle()`
+- 再依赖 stdout/stderr + JSON 标记把结果传回主进程
+- 在 Windows 上，这条链路会被 stdout/stderr 缓冲、编码、调试输出污染、子进程退出时机等问题放大
+- 结果就是：ComfyUI 已出图，但 Bot 拿不到结果，误报 `no output`
+
+**错误修复路线（浪费时间）**：
+- 给子进程加 `-u`
+- 加线程异步读 stdout/stderr
+- 加 `communicate()`
+- 用 `__RESULT_START__` / `__RESULT_END__` 提取 JSON
+- 继续往 stdout 打调试日志
+
+这些都只是补丁，不是根治。
+
+**最终解决方案（正确）**：
+- 彻底删除 `python -c` 子进程 + stdout/JSON 回传链路
+- 在 `comfy_bot.py` 主进程内直接调用 `cmd_handler.handle()`
+- 结果直接以 Python dict 返回，不再走 IPC
+- 同时静音 `cmd_handler.py` / `comfyui_api.py` 的调试 `print`
+
+**教训**：
+- 如果出现“ComfyUI 已出图，但 Bot 还在 Generating / no output”，第一怀疑对象应该是 **Bot 的进程间通信**，不是 ComfyUI
+- Windows 下用 stdout/stderr 给主进程回传业务结果，极不稳
+- **业务结果不要走 stdout 管道，能进程内直调就别起子进程**
+
+---
+
+### [2026-03-07] 长中文 `/img` 提示词先整段翻译会卡死在翻译阶段
+**问题**：长 `/img` 提示词时，Bot 显示 `Generating` 很久，但 ComfyUI 队列是空的，根本没有任务提交。
+
+**根本原因**：
+- 原顺序是：`全文翻译 -> 英文截断`
+- 超长中文 prompt 会先整段送到 Ollama 做翻译
+- 结果在翻译阶段就可能挂住或极慢，ComfyUI 根本收不到任务
+
+**最终解决方案**：
+- 改成：`原文先截断 -> 再翻译 -> 英文再截断`
+- 当前阈值：原文先截到 500 字符，英文再截到 380 字符
+- 放弃“智能压缩优先”，改为“硬截断优先”
+
+**教训**：
+- 长 prompt 的稳定性优化，先考虑**减少进入翻译模型的输入长度**，不是先考虑压缩花活
+- 对 `/img` 这类生产命令，稳定性优先级高于“更聪明的压缩”
+
+---
+
 ### [2026-03-07] Bot 子进程日志缓冲导致无法排查
 **问题**：Bot 启动子进程执行命令，但日志无法实时输出，卡住时看不到内部发生了什么
 
@@ -40,6 +90,7 @@ proc = subprocess.Popen([PY, "-u", "-c", script], ...)
 **教训**：
 - 子进程调试时必须添加 `-u` 参数
 - 否则日志延迟会让你以为程序卡住了
+- 但更深一层的教训是：**别让业务正确性依赖子进程 stdout**
 
 ---
 
