@@ -338,7 +338,8 @@ HELP_MAIN = (
     "━━━━━━━━━━━━━━━━━━━━━━\n\n"
     "🖼 文生图\n"
     "  /img — RedCraft DX3 文生图\n"
-    "  /md — Moody ZIB+ZIT 文生图\n\n"
+    "  /md — Moody ZIB+ZIT 文生图\n"
+    "  /face — Telegram 友好换脸（当前图=参考脸，回复图=目标图）\n\n"
     "🎬 视频\n"
     "  /t2v — Wan2.2 AIO 文生视频\n"
     "  /i2v — Wan2.2 AIO 图生视频\n\n"
@@ -395,6 +396,18 @@ HELP_DETAIL = {
         "  步数固定 ZIB=17 + ZIT=12 不可调\n\n"
         "示例:\n"
         "/moody 森林中的精灵少女 --size 768x1024"
+    ),
+    "face": (
+        "🖼 /face [prompt]\n"
+        "Telegram 友好换脸：当前发送的图 = 参考脸，回复的图 = 目标图\n"
+        "可选附带 prompt，不写也能跑\n\n"
+        "用法:\n"
+        "  1. 回复一张目标图\n"
+        "  2. 当前消息再发一张参考脸\n"
+        "  3. caption 里写 /face 或 /face <prompt>\n\n"
+        "示例:\n"
+        "回复目标图，发送参考脸并写 /face\n"
+        "回复目标图，发送参考脸并写 /face cinematic portrait"
     ),
     "faceid": (
         "🖼 /faceid <prompt>\n"
@@ -459,6 +472,7 @@ TIPS = {
     "zimg": "🎨 Z-Image-Turbo generating...",
     "moody": "🎨 Moody ZIB+ZIT dual-model generating (~2-3min)...",
     "zface": "🎨 Z-Image face reference generating...",
+    "face": "🎨 Face swap generating (~30-60s)...",
     "faceid": "🎨 PuLID FaceID generating (~30s)...",
     "i2v": "🎬 img2video ~5-10min...",
     "i2v2": "🎬 i2v2 (two-stage) ~10-15min...",
@@ -469,13 +483,21 @@ TIPS = {
 }
 
 
-def get_photo(msg):
+def get_current_photo(msg):
     if msg.get("photo"):
         return msg["photo"][-1]["file_id"]
+    return None
+
+
+def get_reply_photo(msg):
     r = msg.get("reply_to_message", {})
     if r.get("photo"):
         return r["photo"][-1]["file_id"]
     return None
+
+
+def get_photo(msg):
+    return get_current_photo(msg) or get_reply_photo(msg)
 
 
 def get_video(msg):
@@ -508,7 +530,7 @@ def send_result(cid, mid, res):
 def handle(msg):
     cid = msg["chat"]["id"]
     mid = msg["message_id"]
-    text = (msg.get("text") or "").strip()
+    text = (msg.get("text") or msg.get("caption") or "").strip()
     if not text or not text.startswith("/"):
         return
 
@@ -567,6 +589,7 @@ def handle(msg):
         return
 
     img = vid = None
+    target_img = None
     if cmd in ("i2v", "i2v2", "zface", "faceid"):
         fid = get_photo(msg)
         if not fid:
@@ -576,6 +599,18 @@ def handle(msg):
         log(f"Downloading photo {fid[:16]}...")
         img = dl_file(fid)
         log(f"Photo downloaded: {img}")
+    if cmd == "face":
+        face_fid = get_current_photo(msg)
+        target_fid = get_reply_photo(msg)
+        if not face_fid or not target_fid:
+            reply(cid, "用法：回复目标图，再发送参考脸图片，并在 caption 里写 /face 或 /face <prompt>", mid)
+            return
+        log(f"Downloading face photo {face_fid[:16]}...")
+        img = dl_file(face_fid)
+        log(f"Face photo downloaded: {img}")
+        log(f"Downloading target photo {target_fid[:16]}...")
+        target_img = dl_file(target_fid)
+        log(f"Target photo downloaded: {target_img}")
     if cmd == "upscale":
         fid = get_video(msg)
         if not fid:
@@ -585,6 +620,11 @@ def handle(msg):
     if cmd in ("img", "zimg", "moody", "zface", "faceid", "t2v", "pipeline") and not body:
         reply(cid, f"Usage: /{cmd} <prompt>", mid)
         return
+    if cmd == "face" and target_img:
+        if body:
+            body = f'{body} --target "{target_img}"'
+        else:
+            body = f'--target "{target_img}"'
 
     # --xx: AI prompt expansion before generation
     if "--xx" in body:

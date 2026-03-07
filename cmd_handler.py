@@ -159,17 +159,17 @@ def handle(cmd, body, image_path=None, video_path=None):
         return _r(comfy_runner.img2video(en, image_path, w, h,
                   int(opts.get("length", 81)), steps), "video", en)
 
-    if cmd == "id":
+    if cmd in ("id", "face"):
         if not image_path:
-            return {"ok": False, "error": "need face image (reply to face photo)"}
-        # Klein9b FaceID 需要两张图：face_image (回复的图) + target_image (--target 参数)
+            return {"ok": False, "error": "need face image"}
         target = opts.get("target")
         if not target:
-            return {"ok": False, "error": "need --target <target_image_path>"}
+            return {"ok": False, "error": "need target image"}
         w, h = parse_size(opts.get("size"), 1024, 1024)
         steps = int(opts.get("steps", 20))
-        return _r(comfy_runner.klein_faceid(en, image_path, target, w, h, steps),
-                  "image", en)
+        prompt_text = en if cmd == "id" else raw
+        return _r(comfy_runner.klein_faceid(prompt_text, image_path, target, w, h, steps),
+                  "image", prompt_text)
 
 
 
