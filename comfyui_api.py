@@ -106,7 +106,6 @@ def build_txt2img_prompt(
 
 def queue_prompt(prompt: dict, client_id: str | None = None) -> str:
     """提交 prompt 到 ComfyUI，返回 prompt_id"""
-    print(f"[queue_prompt] Starting to queue prompt", flush=True)
     if client_id is None:
         client_id = str(uuid.uuid4())
 
@@ -121,53 +120,40 @@ def queue_prompt(prompt: dict, client_id: str | None = None) -> str:
         headers={"Content-Type": "application/json"}
     )
     try:
-        print(f"[queue_prompt] Sending request to {COMFYUI_URL}/prompt", flush=True)
         with urllib.request.urlopen(req, timeout=30) as resp:
             result = json.loads(resp.read())
-        print(f"[queue_prompt] Got prompt_id: {result['prompt_id']}", flush=True)
         return result["prompt_id"]
     except Exception as e:
-        print(f"[queue_prompt] Error: {e}", flush=True)
         raise RuntimeError(f"Failed to queue prompt: {e}")
 
 
 def poll_history(prompt_id: str, timeout: int = 1800, interval: float = 2.0) -> dict:
     """轮询直到 prompt 完成，返回 history 数据"""
-    print(f"[poll_history] Starting poll for {prompt_id}, timeout={timeout}s", flush=True)
     start = time.time()
     while time.time() - start < timeout:
         try:
-            # 先检查队列状态
             with urllib.request.urlopen(f"{COMFYUI_URL}/queue", timeout=10) as resp:
                 queue = json.loads(resp.read())
-            
-            # 检查是否还在队列中
+
             in_queue = False
             for item in queue.get("queue_running", []) + queue.get("queue_pending", []):
                 if len(item) >= 2 and item[1] == prompt_id:
                     in_queue = True
-                    print(f"[poll_history] Still in queue", flush=True)
                     break
-            
-            # 如果不在队列中，检查 history
+
             if not in_queue:
                 with urllib.request.urlopen(f"{COMFYUI_URL}/history/{prompt_id}", timeout=10) as resp:
                     history = json.loads(resp.read())
                 if prompt_id in history:
                     status = history[prompt_id].get("status", {})
-                    print(f"[poll_history] Status: {status.get('status_str')}, completed: {status.get('completed')}", flush=True)
                     if status.get("completed", False) or status.get("status_str") == "success":
-                        print(f"[poll_history] Task completed, returning history", flush=True)
                         return history[prompt_id]
                     if "outputs" in history[prompt_id] and history[prompt_id]["outputs"]:
-                        print(f"[poll_history] Found outputs, returning history", flush=True)
                         return history[prompt_id]
-                else:
-                    print(f"[poll_history] Not in queue and not in history, waiting...", flush=True)
-        except urllib.error.URLError as e:
-            print(f"[poll_history] URLError: {e}", flush=True)
-        except Exception as e:
-            print(f"[poll_history] Error: {e}", flush=True)
+        except urllib.error.URLError:
+            pass
+        except Exception:
+            pass
         time.sleep(interval)
     raise TimeoutError(f"ComfyUI prompt {prompt_id} timed out after {timeout}s")
 

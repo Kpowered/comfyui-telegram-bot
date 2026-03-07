@@ -118,32 +118,17 @@ def handle(cmd, body, image_path=None, video_path=None):
 
     # /img 先截原始中文/原文，再翻译，避免长 prompt 卡死在翻译阶段
     if cmd == "img" and raw and len(raw) > 500:
-        original_raw_len = len(raw)
         raw = raw[:500]
         truncated = True
-        try:
-            print(f"[TRUNCATE_RAW] Prompt too long before translate: {original_raw_len} -> {len(raw)} chars", flush=True)
-        except Exception:
-            pass
 
     en = translate_zh2en(raw) if raw else ""
 
-    # 记录翻译结果（避免控制台编码炸掉时影响主流程）
-    if raw and has_chinese(raw):
-        try:
-            print(f"[TRANSLATE]\nChinese: {raw}\nEnglish: {en}\n", flush=True)
-        except Exception:
-            pass
+    # 调试输出静音：避免子进程因 stdout 管道挂住
 
     # /img 再做英文长度硬截断
     if cmd == "img" and len(en) > 380:
-        original_en_len = len(en)
         en = en[:380]
         truncated = True
-        try:
-            print(f"[TRUNCATE_EN] Prompt too long after translate: {original_en_len} -> {len(en)} chars", flush=True)
-        except Exception:
-            pass
 
     if cmd == "img":
         w, h = parse_size(opts.get("size"), 1920, 1080)
