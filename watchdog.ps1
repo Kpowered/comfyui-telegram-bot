@@ -9,6 +9,9 @@ $COMFY_MAIN = 'D:\ComfyUI\ComfyUI_windows_portable\ComfyUI\main.py'
 $COMFY_PORT = 8188
 $COMFY_URL = 'http://127.0.0.1:8188/system_stats'
 $LOCK = Join-Path $WS 'watchdog.lock'
+$CHECK_INTERVAL = 180
+$COMFY_GRACE_SECONDS = 45
+$BOT_GRACE_SECONDS = 20
 
 function Log($msg) {
     $line = "$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') $msg"
@@ -69,6 +72,36 @@ function Start-Bot {
     Start-Process -FilePath $PY -ArgumentList @($BOT_PY) -WindowStyle Hidden
 }
 
+function Ensure-Comfy {
+    if (Test-ComfyAlive) {
+        Log 'ComfyUI healthy'
+        return
+    }
+    Log 'ComfyUI health check failed'
+    Start-Comfy
+    Start-Sleep -Seconds $COMFY_GRACE_SECONDS
+    if (Test-ComfyAlive) {
+        Log 'ComfyUI recovered'
+    } else {
+        Log 'ComfyUI still down after grace period'
+    }
+}
+
+function Ensure-Bot {
+    if (Get-BotProcess) {
+        Log 'Telegram bot healthy'
+        return
+    }
+    Log 'Telegram bot missing'
+    Start-Bot
+    Start-Sleep -Seconds $BOT_GRACE_SECONDS
+    if (Get-BotProcess) {
+        Log 'Telegram bot recovered'
+    } else {
+        Log 'Telegram bot still missing after grace period'
+    }
+}
+
 # single-instance guard
 $lockHandle = $null
 try {
@@ -78,12 +111,12 @@ try {
 }
 
 try {
-    if (-not (Test-ComfyAlive)) {
-        Log 'ComfyUI health check failed'
-        Start-Comfy
+    Log "Watchdog started (interval=${CHECK_INTERVAL}s)"
+    while ($true) {
+        Ensure-Comfy
+        Ensure-Bot
+        Start-Sleep -Seconds $CHECK_INTERVAL
     }
-    Start-Sleep -Seconds 2
-    Start-Bot
 } finally {
     if ($lockHandle) { $lockHandle.Close() }
 }
