@@ -9,7 +9,7 @@ $COMFY_MAIN = 'D:\ComfyUI\ComfyUI_windows_portable\ComfyUI\main.py'
 $COMFY_PORT = 8188
 $COMFY_URL = 'http://127.0.0.1:8188/system_stats'
 $LOCK = Join-Path $WS 'watchdog.lock'
-$CHECK_INTERVAL = 180
+$CHECK_INTERVAL = 60
 $COMFY_GRACE_SECONDS = 45
 $BOT_GRACE_SECONDS = 20
 
